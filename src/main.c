@@ -1,0 +1,562 @@
+/*
+ * main.c
+ *
+ * Copyright (c) 2001-2002  Ben Fennema
+ * Copyright (c) 2014-2021  Pali Rohár <pali.rohar@gmail.com>
+ * All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
+ */
+
+/**
+ * @file
+ * mkudffs main program and I/O functions
+ */
+
+#include "config.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <inttypes.h>
+#include <locale.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <limits.h>
+#include <dirent.h>
+#include <sys/ioctl.h>
+#ifdef __APPLE__
+#include <sys/disk.h>
+#else
+#include <linux/fs.h>
+#include <linux/fd.h>
+#include <sys/sysmacros.h>
+#endif
+
+#include "mkudffs.h"
+#include "defaults.h"
+#include "options.h"
+
+static int valid_offset(int fd, off_t offset)
+{
+	char ch;
+
+	if (lseek(fd, offset, SEEK_SET) < 0)
+		return 0;
+	if (read_nointr(fd, &ch, 1) < 1)
+		return 0;
+	return 1;
+}
+
+static uint32_t get_blocks(int fd, int blocksize, uint32_t opt_blocks)
+{
+	uint64_t blocks;
+	struct stat buf;
+
+	if (opt_blocks)
+		return opt_blocks;
+
+	if (fd <= 0)
+		return 0;
+
+#ifdef __APPLE__
+	{
+		uint64_t block_count;
+		uint32_t blk_size;
+		if (ioctl(fd, DKIOCGETBLOCKCOUNT, &block_count) >= 0 &&
+		    ioctl(fd, DKIOCGETBLOCKSIZE, &blk_size) >= 0)
+		{
+			blocks = (uint64_t)block_count * blk_size / blocksize;
+		}
+		else if (fstat(fd, &buf) == 0 && S_ISREG(buf.st_mode))
+			blocks = buf.st_size / blocksize;
+		else
+		{
+			off_t high, low;
+			for (low=0, high = 1024; valid_offset(fd, high); high *= 2)
+				low = high;
+			while (low < high - 1)
+			{
+				const off_t mid = (low + high) / 2;
+				if (valid_offset(fd, mid))
+					low = mid;
+				else
+					high = mid;
+			}
+			valid_offset(fd, 0);
+			blocks = (low + 1) / blocksize;
+		}
+	}
+#else
+#ifdef BLKGETSIZE64
+	uint64_t size64;
+	if (ioctl(fd, BLKGETSIZE64, &size64) >= 0)
+		blocks = size64 / blocksize;
+	else
+#endif
+#ifdef BLKGETSIZE
+	{
+		long size;
+		if (ioctl(fd, BLKGETSIZE, &size) >= 0)
+			blocks = size / (blocksize / 512);
+		else
+	}
+#endif
+#ifdef FDGETPRM
+	{
+		struct floppy_struct this_floppy;
+		if (ioctl(fd, FDGETPRM, &this_floppy) >= 0)
+			blocks = this_floppy.size / (blocksize / 512);
+		else
+	}
+#endif
+	if (fstat(fd, &buf) == 0 && S_ISREG(buf.st_mode))
+		blocks = buf.st_size / blocksize;
+	else
+	{
+		off_t high, low;
+		for (low=0, high = 1024; valid_offset(fd, high); high *= 2)
+			low = high;
+		while (low < high - 1)
+		{
+			const off_t mid = (low + high) / 2;
+			if (valid_offset(fd, mid))
+				low = mid;
+			else
+				high = mid;
+		}
+		valid_offset(fd, 0);
+		blocks = (low + 1) / blocksize;
+	}
+#endif /* __APPLE__ */
+
+	if (blocks > UINT32_MAX)
+	{
+		fprintf(stderr, "%s: Warning: Disk is too big, using only %"PRIu32" blocks\n", appname, UINT32_MAX);
+		return UINT32_MAX;
+	}
+
+	return blocks;
+}
+
+static void detect_blocksize(int fd, struct udf_disc *disc, int *blocksize)
+{
+#ifdef __APPLE__
+	uint32_t size;
+
+	if (ioctl(fd, DKIOCGETBLOCKSIZE, &size) != 0 || size <= 0)
+		return;
+
+	if (!disc->blkssz)
+		disc->blkssz = size;
+
+	if (*blocksize != -1)
+		return;
+
+	if (size < 512 || size > 32768 || (size & (size - 1)))
+	{
+		fprintf(stderr, "%s: Warning: Disk logical sector size (%d) is not suitable for UDF\n", appname, size);
+		return;
+	}
+
+	disc->blocksize = size;
+	*blocksize = disc->blocksize;
+	disc->udf_lvd[0]->logicalBlockSize = cpu_to_le32(disc->blocksize);
+#else
+#ifdef BLKSSZGET
+	int size;
+
+	if (ioctl(fd, BLKSSZGET, &size) != 0 || size <= 0)
+		return;
+
+	if (!disc->blkssz)
+		disc->blkssz = size;
+
+	if (*blocksize != -1)
+		return;
+
+	if (size < 512 || size > 32768 || (size & (size - 1)))
+	{
+		fprintf(stderr, "%s: Warning: Disk logical sector size (%d) is not suitable for UDF\n", appname, size);
+		return;
+	}
+
+	disc->blocksize = size;
+	*blocksize = disc->blocksize;
+	disc->udf_lvd[0]->logicalBlockSize = cpu_to_le32(disc->blocksize);
+#endif
+#endif
+}
+
+static int is_whole_disk(int fd)
+{
+#ifdef __APPLE__
+	struct stat st;
+	if (fstat(fd, &st) != 0)
+		return -1;
+	if (!S_ISBLK(st.st_mode))
+		return 1;
+	/* On macOS, whole disks are /dev/diskN, partitions are /dev/diskNsM.
+	   Without access to the device name here, assume whole disk for block devices. */
+	return 1;
+#else
+	struct stat st;
+	char buf[512];
+	DIR *dir;
+	struct dirent *d;
+	int maj;
+	int min;
+	int has_slave;
+	int slave_errno;
+
+	if (fstat(fd, &st) != 0)
+		return -1;
+
+	if (!S_ISBLK(st.st_mode))
+		return 1;
+
+	maj = major(st.st_rdev);
+	min = minor(st.st_rdev);
+
+	if (snprintf(buf, sizeof(buf), "/sys/dev/block/%d:%d/partition", maj, min) >= (int)sizeof(buf))
+		return -1;
+
+	if (stat(buf, &st) == 0)
+		return 0;
+	else if (errno != ENOENT)
+		return -1;
+
+	if (snprintf(buf, sizeof(buf), "/sys/dev/block/%d:%d/slaves/", maj, min) >= (int)sizeof(buf))
+		return -1;
+
+	dir = opendir(buf);
+	if (!dir && errno != ENOENT)
+		return -1;
+
+	if (dir)
+	{
+		errno = 0;
+		has_slave = 0;
+		while ((d = readdir(dir)))
+		{
+			if (strcmp(d->d_name, ".") == 0 || strcmp(d->d_name, "..") == 0)
+				continue;
+			has_slave = 1;
+			break;
+		}
+		slave_errno = errno;
+
+		closedir(dir);
+
+		if (slave_errno)
+			return -1;
+
+		if (has_slave)
+			return 0;
+	}
+
+	if (snprintf(buf, sizeof(buf), "/sys/dev/block/%d:%d/", maj, min) >= (int)sizeof(buf))
+		return -1;
+
+	if (stat(buf, &st) != 0)
+		return -1;
+
+	return 1;
+#endif
+}
+
+static int is_removable_disk(int fd)
+{
+#ifdef __APPLE__
+	(void)fd;
+	return -1;
+#else
+	struct stat st;
+	char buf[512];
+	ssize_t ret;
+
+	if (fstat(fd, &st) != 0)
+		return -1;
+
+	if (!S_ISBLK(st.st_mode))
+		return -1;
+
+	if (snprintf(buf, sizeof(buf), "/sys/dev/block/%d:%d/removable", major(st.st_rdev), minor(st.st_rdev)) >= (int)sizeof(buf))
+		return -1;
+
+	int rem_fd = open(buf, O_RDONLY);
+	if (rem_fd < 0)
+		return -1;
+
+	ret = read_nointr(rem_fd, buf, sizeof(buf)-1);
+	close(rem_fd);
+
+	if (ret < 0)
+		return -1;
+
+	buf[ret] = 0;
+	if (strcmp(buf, "1\n") == 0)
+		return 1;
+	else if (strcmp(buf, "0\n") == 0)
+		return 0;
+
+	return -1;
+#endif
+}
+
+static int write_func(struct udf_disc *disc, struct udf_extent *ext)
+{
+	static char *buffer = NULL;
+	static size_t bufferlen = 0;
+	int fd = *(int *)disc->write_data;
+	ssize_t length, offset;
+	uint32_t blocks;
+	struct udf_desc *desc;
+	struct udf_data *data;
+
+	if (buffer == NULL)
+	{
+		bufferlen = disc->blocksize;
+		buffer = calloc(bufferlen, 1);
+		if (buffer == NULL)
+			return -1;
+	}
+
+	if (!(ext->space_type & (USPACE|RESERVED)))
+	{
+		desc = ext->head;
+		while (desc != NULL)
+		{
+			if (!(disc->flags & FLAG_NO_WRITE) || fd >= 0)
+			{
+				if (lseek(fd, (off_t)(ext->start + desc->offset) * disc->blocksize, SEEK_SET) < 0)
+					return -1;
+			}
+			data = desc->data;
+			offset = 0;
+			while (data != NULL)
+			{
+				if (data->length + offset > bufferlen)
+				{
+					bufferlen = (data->length + offset + disc->blocksize - 1) & ~(disc->blocksize - 1);
+					buffer = realloc(buffer, bufferlen);
+					if (buffer == NULL)
+						return -1;
+				}
+				memcpy(buffer + offset, data->buffer, data->length);
+				offset += data->length;
+				data = data->next;
+			}
+			length = (offset + disc->blocksize - 1) & ~(disc->blocksize - 1);
+			if (offset != length)
+				memset(buffer + offset, 0x00, length - offset);
+			if (!(disc->flags & FLAG_NO_WRITE))
+			{
+				if (write_nointr(fd, buffer, length) != length)
+					return -1;
+			}
+			desc = desc->next;
+		}
+	}
+	else if (!(disc->flags & FLAG_BOOTAREA_PRESERVE))
+	{
+		length = disc->blocksize;
+		blocks = ext->blocks;
+		memset(buffer, 0, length);
+		if (!(disc->flags & FLAG_NO_WRITE) || fd >= 0)
+		{
+			if (lseek(fd, (off_t)(ext->start) * disc->blocksize, SEEK_SET) < 0)
+				return -1;
+		}
+		while (blocks-- > 0)
+		{
+			if (!(disc->flags & FLAG_NO_WRITE))
+			{
+				if (write_nointr(fd, buffer, length) != length)
+					return -1;
+			}
+		}
+	}
+	return 0;
+}
+	
+int main(int argc, char *argv[])
+{
+	struct udf_disc	disc;
+	struct udf_extent *ext;
+	char *filename;
+	char buf[128*3];
+	int fd;
+	int flags;
+	int create_new_file = 0;
+	int blocksize = -1;
+	int media;
+	size_t len;
+
+	if (fcntl(0, F_GETFL) < 0 && open("/dev/null", O_RDONLY) < 0)
+		_exit(1);
+	if (fcntl(1, F_GETFL) < 0 && open("/dev/null", O_WRONLY) < 0)
+		_exit(1);
+	if (fcntl(2, F_GETFL) < 0 && open("/dev/null", O_WRONLY) < 0)
+		_exit(1);
+
+	appname = "mkudffs";
+
+	if (!setlocale(LC_CTYPE, ""))
+		fprintf(stderr, "%s: Error: Cannot set locale/codeset, fallback to default 7bit C ASCII\n", appname);
+
+	udf_init_disc(&disc);
+	parse_args(argc, argv, &disc, &filename, &create_new_file, &blocksize, &media);
+
+	if (disc.flags & FLAG_NO_WRITE)
+		printf("Note: Not writing to device, just simulating\n");
+
+	if (!(disc.flags & FLAG_NO_WRITE))
+		flags = O_RDWR | O_EXCL;
+	else
+		flags = O_RDONLY | O_EXCL;
+
+	fd = open(filename, flags);
+	if (fd < 0)
+	{
+		if (errno != ENOENT)
+		{
+			fprintf(stderr, "%s: Error: Cannot open device '%s': %s\n", appname, filename, (errno != EBUSY) ? strerror(errno) : "Device is mounted or mkudffs is already running");
+			exit(1);
+		}
+
+		if (!disc.blocks)
+		{
+			fprintf(stderr, "%s: Error: Cannot create new image file '%s': block-count was not specified\n", appname, filename);
+			exit(1);
+		}
+	}
+
+	if (fd >= 0)
+		detect_blocksize(fd, &disc, &blocksize);
+
+	if (blocksize == -1 && media == MEDIA_TYPE_HD)
+	{
+		disc.blocksize = 512;
+		disc.udf_lvd[0]->logicalBlockSize = cpu_to_le32(disc.blocksize);
+	}
+
+	disc.blocks = get_blocks(fd, disc.blocksize, disc.blocks);
+	if (disc.blocks == 0)
+	{
+		fprintf(stderr, "%s: Error: Device '%s' is empty\n", appname, filename);
+		exit(1);
+	}
+
+	disc.head->blocks = disc.blocks;
+	disc.write = write_func;
+	disc.write_data = &fd;
+
+	if (!(disc.flags & FLAG_BOOTAREA_MASK))
+	{
+		if (media != MEDIA_TYPE_HD || disc.start_block)
+			disc.flags |= FLAG_BOOTAREA_PRESERVE;
+		else if (fd >= 0 && is_removable_disk(fd) == 0 && is_whole_disk(fd) == 1)
+			disc.flags |= FLAG_BOOTAREA_MBR;
+		else
+			disc.flags |= FLAG_BOOTAREA_ERASE;
+	}
+
+	printf("filename=%s\n", filename);
+
+	memset(buf, 0, sizeof(buf));
+	len = decode_string(&disc, disc.udf_lvd[0]->logicalVolIdent, buf, 128, sizeof(buf));
+	printf("label=%s\n", buf);
+
+	memset(buf, 0, sizeof(buf));
+	len = gen_uuid_from_vol_set_ident(buf, disc.udf_pvd[0]->volSetIdent, 128);
+	printf("uuid=%s\n", buf);
+
+	printf("blocksize=%"PRIu32"\n", disc.blocksize);
+	printf("blocks=%"PRIu32"\n", disc.blocks);
+	printf("udfrev=%"PRIx16".%02"PRIx16"\n", disc.udf_rev >> 8, disc.udf_rev & 0xFF);
+
+	if (disc.start_block)
+		printf("startblock=%"PRIu32"\n", disc.start_block);
+
+	split_space(&disc);
+
+	setup_mbr(&disc);
+	setup_vrs(&disc);
+	setup_anchor(&disc);
+	setup_partition(&disc);
+	setup_vds(&disc);
+
+	if (disc.vat_block)
+		printf("vatblock=%"PRIu32"\n", disc.vat_block);
+
+	dump_space(&disc);
+
+	if (disc.blocks <= 257)
+		fprintf(stderr, "%s: Warning: UDF filesystem has less than 258 blocks, it can cause problems\n", appname);
+
+	if (len == (size_t)-1)
+		fprintf(stderr, "%s: Warning: Volume Set Identifier must be at least 8 characters long\n", appname);
+	else if (len < 16)
+		fprintf(stderr, "%s: Warning: First 16 characters of Volume Set Identifier are not hexadecimal lowercase digits\n%s: Warning: This would cause problems for UDF uuid\n", appname, appname);
+
+	if (fd >= 0 && is_whole_disk(fd) == 0)
+		fprintf(stderr, "%s: Warning: Creating new UDF filesystem on partition, and not on whole disk device\n%s: Warning: UDF filesystem on partition cannot be read on Apple systems\n", appname, appname);
+
+	if (fd < 0 && !(disc.flags & FLAG_NO_WRITE))
+	{
+		// Create new file disk image
+		fd = open(filename, O_RDWR | O_CREAT | O_EXCL, 0660);
+		if (fd < 0)
+		{
+			fprintf(stderr, "%s: Error: Cannot create new image file '%s': %s\n", appname, filename, strerror(errno));
+			exit(1);
+		}
+
+		// If creating new disk image file then shift all blocks to the beginning of the file
+		if (disc.start_block)
+		{
+			for (ext = disc.head; ext != NULL; ext = ext->next)
+				ext->start -= disc.start_block;
+		}
+	}
+
+	if (write_disc(&disc) < 0)
+	{
+		fprintf(stderr, "%s: Error: Cannot write to device '%s': %s\n", appname, filename, strerror(errno));
+		return 1;
+	}
+
+	if (!(disc.flags & FLAG_NO_WRITE))
+	{
+		if (fsync(fd) != 0)
+		{
+			fprintf(stderr, "%s: Error: Synchronization to device '%s' failed: %s\n", appname, filename, strerror(errno));
+			exit(1);
+		}
+	}
+
+	if (fd >= 0 && close(fd) != 0 && errno != EINTR)
+	{
+		fprintf(stderr, "%s: Error: Closing device '%s' failed: %s\n", appname, filename, strerror(errno));
+		exit(1);
+	}
+
+	return 0;
+}
