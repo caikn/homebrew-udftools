@@ -1,145 +1,140 @@
-# UDF 2.50 BD-ROM Creator for macOS
+# udftools for macOS
 
-Create PS4-compatible Blu-ray disc images on macOS without any third-party tools like ImgBurn.
+A macOS port of [udftools](https://github.com/pali/udftools) (v2.3) — the Linux UDF filesystem utilities. Creates, inspects, and relabels UDF filesystem images (1.01–2.60) on macOS, including UDF 2.50 for Blu-ray.
 
-## Requirements
+## What's Included
 
-- macOS with Xcode command-line tools (`xcode-select --install`)
-- A BD-R disc and Blu-ray burner (for burning)
+| Tool | Description |
+|------|-------------|
+| `mkudffs` | Create UDF filesystem images |
+| `udfinfo` | Display UDF filesystem information |
+| `udflabel` | Show or change UDF filesystem label/UUID |
 
-## Quick Start
+The Linux-only tools (`cdrwtool`, `pktsetup`) are not ported as they depend on Linux kernel interfaces for optical/packet writing.
+
+## Differences from Upstream
+
+| | Upstream (Linux) | This Port (macOS) |
+|---|---|---|
+| Build system | autotools (`./configure && make`) | Hand-written Makefiles |
+| Block device ioctls | `BLKGETSIZE64`, `BLKSSZGET` | `DKIOCGETBLOCKCOUNT`, `DKIOCGETBLOCKSIZE` |
+| CD-ROM probing | `CDROMMULTISESSION`, `CDROM_LAST_WRITTEN` | Stubbed (not available on macOS) |
+| Media autodetection | Probes device type via ioctls | Defaults to HD |
+| Metadata Partition | Not implemented for `mkudffs` | Fully implemented (required for BD-ROM) |
+| `fdatasync` | Used directly | `fcntl(F_FULLFSYNC)` on macOS |
+| Geometry ioctl | `HDIO_GETGEO` | LBA-Assist Translation fallback |
+
+All platform-specific changes are guarded by `#ifdef __APPLE__` so the code remains compilable on Linux.
+
+## Build
+
+Requires only Xcode command-line tools (`xcode-select --install`).
 
 ```bash
-# Build mkudffs (only needed once)
-cd src && make && cd ..
+# Build all tools
+cd mkudffs && make && cd ..
+cd udfinfo && make && cd ..
+cd udflabel && make && cd ..
 
-# Create a UDF 2.50 image with Metadata Partition
-src/mkudffs --new-file --udfrev=2.50 --blocksize=2048 --label="BLURAY" output.iso 10000000
+# Install to /usr/local/bin (optional)
+sudo cp mkudffs/mkudffs udfinfo/udfinfo udflabel/udflabel /usr/local/bin/
+```
 
-# Mount, populate with BDMV content, unmount
-hdiutil attach -nobrowse output.iso
+## Usage
+
+### mkudffs — Create UDF Filesystem
+
+```bash
+# UDF 2.50 image with Metadata Partition (BD-ROM compatible)
+mkudffs --new-file --udfrev=2.50 --blocksize=2048 --label="BLURAY" output.iso 10000000
+
+# UDF 2.01 image (general purpose)
+mkudffs --new-file --blocksize=2048 --label="MyDisk" output.img 1024
+
+# Dry-run (simulate without writing)
+mkudffs --no-write --blocksize=2048 somefile.img
+```
+
+UDF 2.50+ automatically includes a Type 2 Metadata Partition Map when not using VAT (sequential media).
+
+### udfinfo — Show UDF Filesystem Information
+
+```bash
+# Show full UDF metadata
+udfinfo image.iso
+
+# Example output:
+#   label=BLURAY
+#   uuid=1fc25c61a7d5da0b
+#   blocksize=2048
+#   blocks=10286100
+#   udfrev=2.50
+#   accesstype=readonly
+#   metadatapartition=yes
+#   metadatafileloc=0
+#   metadatamirrorfileloc=1
+#   metadatasize=44
+```
+
+Options:
+- `-b, --blocksize=N` — Override block size detection
+- `--startblock=N` — Where the UDF filesystem starts
+- `--lastblock=N` — Where the UDF filesystem ends
+- `--vatblock=N` — Location of the VAT (for sequential media)
+
+### udflabel — Show or Change UDF Label
+
+```bash
+# Show current label
+udflabel image.iso
+
+# Change label
+udflabel image.iso "NEW_LABEL"
+
+# Change label on read-only image (force mode)
+udflabel --force image.iso "NEW_LABEL"
+
+# Dry-run (show what would change)
+udflabel --no-write image.iso "NEW_LABEL"
+
+# Change UUID
+udflabel -u random image.iso
+
+# Change multiple identifiers
+udflabel --lvid="My Volume" --vid="MYVOL" --uuid=random image.iso
+```
+
+## Repository Structure
+
+```
+include/        Shared headers (ecma_167.h, osta_udf.h, libudffs.h, bswap.h, config.h)
+libudffs/       Shared library source (crc, extent, unicode, misc)
+mkudffs/        mkudffs tool source
+udfinfo/        udfinfo tool source
+udflabel/       udflabel tool source
+```
+
+Mirrors the [upstream udftools](https://github.com/pali/udftools) layout.
+
+## BD-ROM Workflow (PS4/PS5 Compatible)
+
+```bash
+# 1. Create UDF 2.50 image
+mkudffs --new-file --udfrev=2.50 --blocksize=2048 --label="BLURAY" disc.iso 10000000
+
+# 2. Mount and populate
+hdiutil attach -nobrowse disc.iso
 cp -R /path/to/BDMV /Volumes/BLURAY/
 cp -R /path/to/CERTIFICATE /Volumes/BLURAY/
 hdiutil detach /dev/diskN
 
-# Burn to BD-R
-hdiutil burn output.iso
+# 3. Verify
+udfinfo disc.iso
+
+# 4. Burn
+hdiutil burn disc.iso
 ```
 
-## mkudffs
+## License
 
-A macOS port of Linux [udftools](https://github.com/pali/udftools) `mkudffs` with added **Metadata Partition** support for UDF 2.50+.
-
-### Features
-
-- Creates UDF filesystems from version 1.01 to 2.60
-- **UDF 2.50+ automatically includes a Type 2 Metadata Partition Map** (required by BD-ROM spec)
-- Works with image files and macOS block devices
-- Supports all media types: HD, DVD, DVD-RAM, DVD-RW, CD-RW, BD-R
-
-### Usage
-
-```bash
-# UDF 2.50 with Metadata Partition (automatic for rev >= 2.50)
-src/mkudffs --new-file --udfrev=2.50 --blocksize=2048 --label="DISC" image.iso 10000000
-
-# UDF 2.01 (general purpose, writable)
-src/mkudffs --new-file --blocksize=2048 --label="MyDisk" image.img 1024
-
-# Dry-run (simulate without writing)
-src/mkudffs --no-write --blocksize=2048 image.img
-
-# Write to pre-allocated file
-dd if=/dev/zero of=image.img bs=2048 count=4096
-src/mkudffs --blocksize=2048 --label="MyDisk" image.img
-```
-
-### Build
-
-```bash
-cd src && make
-```
-
-No autotools or third-party dependencies — just Xcode command-line tools.
-
-## Alternative: bdrom_udf250.py
-
-A standalone Python script that creates BD-ROM images by writing UDF 2.50 structures directly (no mounting needed). Use this if you want to avoid the mount/copy/unmount workflow.
-
-```bash
-python3 bdrom_udf250.py /path/to/bluray_content output.iso
-hdiutil burn output.iso
-```
-
-## Input Directory Structure
-
-Your Blu-ray content must follow the BD-ROM structure:
-
-```
-content/
-├── BDMV/
-│   ├── index.bdmv
-│   ├── MovieObject.bdmv
-│   ├── STREAM/
-│   │   └── *.m2ts
-│   ├── CLIPINF/
-│   │   └── *.clpi
-│   ├── PLAYLIST/
-│   │   └── *.mpls
-│   └── BACKUP/
-└── CERTIFICATE/
-    ├── id.bdmv
-    └── BACKUP/
-```
-
-Use [tsMuxeR](https://github.com/justdan96/tsMuxeR) or [MakeMKV](https://www.makemkv.com/) to produce this structure from video files or existing discs.
-
-## Working with Existing ISOs
-
-```bash
-# Mount the source ISO
-hdiutil attach -readonly -nobrowse source.iso
-
-# Create new UDF 2.50 image sized for the content
-src/mkudffs --new-file --udfrev=2.50 --blocksize=2048 --label="BLURAY" new.iso BLOCK_COUNT
-
-# Mount new image, copy content (skip macOS junk)
-hdiutil attach -nobrowse new.iso
-cp -R /Volumes/SOURCE/BDMV /Volumes/BLURAY/
-cp -R /Volumes/SOURCE/CERTIFICATE /Volumes/BLURAY/
-hdiutil detach /dev/disk_new
-
-# Burn
-hdiutil burn new.iso
-```
-
-## What Makes This PS4-Compatible
-
-PS4's Blu-ray player requires strict BD-ROM UDF 2.50 compliance:
-
-| Requirement | Status |
-|---|---|
-| UDF 2.50 (NSR03) | ✓ |
-| Metadata Partition (Type 2 partition map) | ✓ |
-| Metadata File + Mirror (fileType 0xFA/0xFB) | ✓ |
-| Extended File Entries (EFE) | ✓ |
-| LVID integrity: closed | ✓ |
-
-## Troubleshooting
-
-**PS4 error CE-35486-6**: The disc's UDF structure is not recognized. Ensure:
-- You're using a BD-R disc (not DVD-R or CD-R)
-- Your Blu-ray burner supports BD-R writing
-- The BDMV structure is valid (has `index.bdmv` and `MovieObject.bdmv`)
-- The video streams use PS4-supported codecs (H.264/AVC or H.265/HEVC)
-
-**macOS mounts UDF 2.50 images as read-only**: This is expected — macOS doesn't support writing to UDF volumes with Metadata Partition. Mount the image *before* `mkudffs` formats it (use a pre-allocated file), or use `bdrom_udf250.py` which injects files directly.
-
-**Disc burns but won't play**: Verify your source video is properly muxed as a Blu-ray structure with valid playlists and clip info. Use tsMuxeR for remuxing.
-
-## Tools
-
-| Tool | Purpose |
-|---|---|
-| `src/mkudffs` | UDF filesystem creator with Metadata Partition support (C, compiled) |
-| `bdrom_udf250.py` | Standalone BD-ROM image creator (Python, no dependencies) |
+GPL-2.0 (inherited from upstream udftools).
