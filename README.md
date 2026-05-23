@@ -26,18 +26,34 @@ The Linux-only tools (`cdrwtool`, `pktsetup`) are not ported as they depend on L
 
 All platform-specific changes are guarded by `#ifdef __APPLE__` so the code remains compilable on Linux.
 
-## Build
+## Install
+
+### Homebrew (recommended)
+
+```bash
+brew install caikn/udftools/udftools-mac
+```
+
+Or using tap:
+
+```bash
+brew tap caikn/udftools
+brew install udftools-mac
+```
+
+### Build from Source
 
 Requires only Xcode command-line tools (`xcode-select --install`).
 
 ```bash
-# Build all tools
-cd mkudffs && make && cd ..
-cd udfinfo && make && cd ..
-cd udflabel && make && cd ..
+make
+sudo make install
+```
 
-# Install to /usr/local/bin (optional)
-sudo cp mkudffs/mkudffs udfinfo/udfinfo udflabel/udflabel /usr/local/bin/
+This installs `mkudffs`, `udfinfo`, and `udflabel` to `/usr/local/bin/`. To customize the prefix:
+
+```bash
+make install PREFIX=/opt/udftools
 ```
 
 ## Usage
