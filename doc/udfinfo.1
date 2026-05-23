@@ -1,0 +1,304 @@
+'\" t -*- coding: UTF-8 -*-
+.\" Copyright (C) 2017-2021  Pali Rohár <pali.rohar@gmail.com>
+.\"
+.\" This program is free software; you can redistribute it and/or modify
+.\" it under the terms of the GNU General Public License as published by
+.\" the Free Software Foundation; either version 2 of the License, or
+.\" (at your option) any later version.
+.\"
+.\" This program is distributed in the hope that it will be useful,
+.\" but WITHOUT ANY WARRANTY; without even the implied warranty of
+.\" MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+.\" GNU General Public License for more details.
+.\"
+.\" You should have received a copy of the GNU General Public License along
+.\" with this program; if not, write to the Free Software Foundation, Inc.,
+.\" 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+.\"
+.TH UDFINFO 1 "udftools" "Commands"
+
+.SH NAME
+udfinfo \(em show information about UDF filesystem
+
+.SH SYNOPSIS
+.BI "udfinfo [ options ] " device
+
+.SH DESCRIPTION
+\fBudfinfo\fP shows various information about a UDF filesystem stored either on
+the block device or in the disk file image. The output from the \fBudfinfo\fP is
+suitable for parsing by external applications or scripts.
+
+.SH OPTIONS
+.TP
+.B \-h,\-\-help
+Display the usage and the list of options.
+
+.TP
+.BI \-b,\-\-blocksize= " block\-size "
+Specify the size of blocks in bytes. Valid block size for a UDF filesystem is
+a power of two in the range from \fI512\fP to \fI32768\fP and must match a
+device logical (sector) size. If omitted, \fBudfinfo\fP tries to autodetect
+block size. First it tries logical (sector) size and then all valid block sizes.
+
+.TP
+.BI \-\-startblock= " start\-block "
+Specify the block location where the UDF filesystem starts. It is used for
+calculating the block location of the Volume Recognition Sequence (32 kB after
+the start block) and the first Anchor Volume Descriptor Pointer (256 blocks
+after the start block).
+
+Normally start block is \fI0\fP, but for Multisession UDF optical discs it is
+the block location where the last session of Multisession UDF disc starts.
+
+If omitted, \fBudfinfo\fP for optical disc tries to detect start block of the
+last session from disc Table Of Contents. Otherwise value \fI0\fP is used.
+
+For accessing some previous session of Multisession UDF optical disc, it is
+required to specify correct block where that previous session starts. And also
+to specify where that session ends via \fB\-\-lastblock\fP option.
+
+For Multisession UDF disc images stored in file there is no way to detect where
+the last session starts and therefore it is necessary to specify the correct
+start block location manually from the original optical disc Table Of Contents.
+
+(Option available since udfinfo 2.3)
+
+.TP
+.BI \-\-lastblock= " last\-block "
+Specify the block location where the UDF filesystem ends. It is used for
+calculating the block location of second and third Anchor Volume Descriptor
+Pointer (256 blocks prior the last block and the last block itself).
+
+Normally last block is \fInumber of disk blocks minus one\fP, but for
+Multisession UDF optical discs when reading different session than the last one
+(specified by \fB\-\-startblock\fP) it is the block location where the specified
+session ends.
+
+If omitted, \fBudfinfo\fP for optical disc tried to detect the last recorded
+block with fallback to the last block of device or disk file image.
+
+For accessing some previous session of Multisession UDF optical disc, it is
+required to specify correct value for both \fB\-\-startblock\fP and
+\fB\-\-lastblock\fP options.
+
+(Option available since udfinfo 2.3)
+
+.TP
+.BI \-\-vatblock= " vat\-block "
+Specify the block location of the Virtual Allocation Table. Virtual Allocation
+Table is present only on UDF disks with Virtual Partition Map and must be at the
+last written/recorded disk block.
+
+If omitted, \fBudfinfo\fP for optical disc tries to detect the last recorded
+block with fallback to the last block of block device or disk file image or
+block specified by \fB\-\-lastblock\fP. In most cases, this fallback does not
+have to work and for disk file images with Virtual Allocation Table it is
+necessary to specify the correct location.
+
+Virtual Allocation Table contains locations of UDF disk blocks needed to read
+data storage, determinate used and free space blocks, read File Set Identifier
+and calculate Windows-specific Volume Serial Number. Also, it contains Logical
+Volume Identifier and overwrite previously stored in Logical Volume Descriptor.
+
+.TP
+.B \-\-locale
+Encode UDF string identifiers on output according to current locale settings
+(default).
+
+.TP
+.B \-\-u8
+Encode UDF string identifiers on output to 8-bit OSTA Compressed Unicode format
+without leading Compression ID byte, which is equivalent to Latin1 (ISO-8859-1)
+encoding. This will work only for strings which all Unicode code points are
+below U+100.
+
+.TP
+.B \-\-u16
+Encode UDF string identifiers on output to 16-bit OSTA Compressed Unicode
+format without leading Compression ID byte, which is equivalent to UTF-16BE.
+
+.TP
+.B \-\-utf8
+Encode UDF string identifiers on output to UTF-8.
+
+.SH "EXIT STATUS"
+\fBudfinfo\fP returns 0 if successful, non-zero if there are problems like a
+block device does not contain UDF filesystem.
+
+.SH "OUTPUT FORMAT"
+First part of the \fBudfinfo\fP standard output contains information in
+\fIkey\fP=\fIvalue\fP format. List of all keys with their meaning are in the
+following table:
+
+.RS
+.TP 1.7i
+.I filename
+File name of the selected block device or disk file image
+.TP
+.I label
+label is an alias for \fIlvid\fP, see \fBudflabel\fP(8) section
+\fBUDF LABEL AND UUID\fP
+.TP
+.I uuid
+UUID are first 16 hexadecimal lowercase digits of \fIfullvsid\fP, but see
+\fBudflabel\fP(8) section \fBUDF LABEL AND UUID\fP
+.TP
+.I lvid
+UDF Logical Volume Identifier stored in UDF Logical Volume Descriptor
+.TP
+.I vid
+UDF Volume Identifier stored in UDF Primary Volume Descriptor
+.TP
+.I vsid
+\fIfullvsid\fP after \fIuuid\fP part, typically 17.\(en127. character
+.TP
+.I fsid
+UDF File Set Identifier stored in UDF File Set Descriptor
+.TP
+.I fullvsid
+UDF Volume Set Identifier stored in UDF Primary Volume Descriptor
+.TP
+.I owner
+UDF Logical Volume Info1 stored in UDF Implementation Use Volume Descriptor,
+represents Owner name, person creating the medium or filesystem
+(available since udfinfo 2.3)
+.TP
+.I organization
+UDF Logical Volume Info2 stored in UDF Implementation Use Volume Descriptor,
+represents Organization name responsible for creating the medium or filesystem
+(available since udfinfo 2.3)
+.TP
+.I contact
+UDF Logical Volume Info3 stored in UDF Implementation Use Volume Descriptor,
+represents Contact information for the medium or filesystem
+(available since udfinfo 2.3)
+.TP
+.I appid
+UDF Application Identifier stored in UDF Primary Volume Descriptor, identifies
+application that created medium or filesystem
+(available since udfinfo 2.3)
+.TP
+.I impid
+UDF Developer Identifier stored in UDF Implementation Identifier of UDF Primary
+Volume Descriptor, uniquely identifies the implementation which created medium
+or filesystem
+(available since udfinfo 2.3)
+.TP
+.I winserialnum
+Windows-specific Volume Serial Number
+.TP
+.I blocksize
+UDF block size
+.TP
+.I blocks
+Number of all blocks on the selected block device or disk file image
+.TP
+.I usedblocks
+Number of used space blocks on UDF disk for data storage
+.TP
+.I freeblocks
+Number of free space blocks on UDF disk for data storage
+.TP
+.I behindblocks
+Number of blocks which are behind the last block used by UDF disk
+.TP
+.I numfiles
+Number of stored files on UDF disk
+.TP
+.I numdirs
+Number of stored directories on UDF disk
+.TP
+.I udfrev
+UDF revision needed for reading UDF disk
+.TP
+.I udfwriterev
+UDF revision needed for writing or modifying UDF disk
+.TP
+.I startblock
+Block location where the UDF filesystem starts (visible only when non-zero,
+available since udfinfo 2.3)
+.TP
+.I lastblock
+Block location where the UDF filesystem ends (visible only when it is not same
+as the last block on disk, available since udfinfo 2.3)
+.TP
+.I vatblock
+Block location of the UDF Virtual Allocation Table (visible only when available)
+.TP
+.I integrity
+UDF integrity of Logical Volume, one of: \fIopened\fP, \fIclosed\fP,
+\fIunknown\fP
+.TP
+.I accesstype
+UDF Access Type, one of: \fIoverwritable\fP, \fIrewritable\fP, \fIwriteonce\fP,
+\fIreadonly\fP, \fIpseudo\-overwritable\fP, \fIunknown\fP
+.TP
+.I softwriteprotect
+Status of UDF SoftWriteProtect flag, either \fIyes\fP or \fIno\fP
+(available since udfinfo 2.2)
+.TP
+.I hardwriteprotect
+Status of UDF HardWriteProtect flag, either \fIyes\fP or \fIno\fP
+(available since udfinfo 2.2)
+.RE
+
+When UDF integrity is not \fIclosed\fP it means that the UDF disk was not
+properly unmounted, is in an inconsistent state and needs repairing.
+
+When either \fIsoftwriteprotect\fP or \fIhardwriteprotect\fP flag is set then
+UDF disk should be treated as read-only.
+
+All UDF string identifiers are stored on UDF disk in Unicode, therefore they are
+locale or code page agnostic. Options \fB\-\-locale\fP, \fB\-\-u8\fP,
+\fB\-\-u16\fP and \fB\-\-utf8\fP controls how are identifiers encoded on output.
+
+All newline characters from the UDF string identifiers are removed, so it is
+guaranteed that the newline character is present only as a separator.
+
+Second part of the \fBudfinfo\fP standard output contains list of UDF block
+types stored on device, one per line in the following format:
+
+.RS
+start=\fIblock\-num\fP, blocks=\fIblock\-count\fP, type=\fIblock\-type\fP
+.RE
+
+With meaning that \fIblock\-type\fP starts at UDF block \fIblock\-num\fP and
+span \fIblock\-count\fP blocks on device.
+
+Windows-specific \fIVolume Serial Number\fP is a non-standard 32-bit checksum,
+calculated as four separate 8-bit XOR checksums of 512 bytes long UDF File Set
+Descriptor. Therefore, it cannot be set or changed as opposed to UUID which is
+64-bit long. This non-standard checksum is used only by Windows systems
+(since Windows 98 era when it was introduced) and can be displayed on Windows
+systems by applications like \fBvol\fP, \fBdir\fP or \fBfsutil.exe\fP.
+
+.SH LIMITATIONS
+\fBudfinfo\fP prior to version 2.3 was unable to handle Multisession UDF discs
+correctly. It always printed only information about the first session (the
+oldest one) and not about the last session (the most recent).
+
+\fBudfinfo\fP prior to version 2.2 was unable to print Unicode strings with
+code points above U+FFFF correctly.
+
+\fBudfinfo\fP prior to version 2.2 was unable to read Metadata Partition. \
+Therefore, determining used and free space blocks, reading File Set Identifier
+and calculating Windows-specific Volume Serial Number did not have to be
+available or correctly calculated for disks with UDF revisions higher than 2.01
+which had Metadata Partition.
+
+\fBudfinfo\fP prior to version 2.1 was unable to read Virtual Allocation Table
+stored outside of Information Control Block. Therefore above limitation applied
+also for some Write Once media.
+
+.SH AUTHOR
+.nf
+Pali Rohár <pali.rohar@gmail.com>
+.fi
+
+.SH AVAILABILITY
+\fBudfinfo\fP is part of the udftools package since version 2.0 and is available
+from https://github.com/pali/udftools/.
+
+.SH "SEE ALSO"
+\fBmkudffs\fP(8), \fBpktsetup\fP(8), \fBudflabel\fP(8), \fBcdrwtool\fP(1),
+\fBwrudf\fP(1)

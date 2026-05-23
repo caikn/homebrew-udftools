@@ -1,0 +1,31 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build all tools
+        run: make
+
+      - name: Test install
+        run: make install PREFIX=${{ runner.temp }}/udftools
+
+      - name: Verify binaries
+        run: |
+          ${{ runner.temp }}/udftools/bin/mkudffs --help 2>&1 || true
+          ${{ runner.temp }}/udftools/bin/udfinfo --help 2>&1 || true
+          ${{ runner.temp }}/udftools/bin/udflabel --help 2>&1 || true
+
+      - name: Integration test
+        run: |
+          ${{ runner.temp }}/udftools/bin/mkudffs --new-file --udfrev=2.50 --blocksize=2048 --label="TEST" /tmp/test.iso 5000
+          ${{ runner.temp }}/udftools/bin/udfinfo /tmp/test.iso
+          ${{ runner.temp }}/udftools/bin/udflabel /tmp/test.iso
