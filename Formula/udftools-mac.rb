@@ -1,11 +1,9 @@
 class UdftoolsMac < Formula
   desc "UDF filesystem utilities for macOS (mkudffs, udfinfo, udflabel)"
-  homepage "https://github.com/pali/udftools"
-  # TODO: Update URL and sha256 when published to a public repo
-  url "https://github.com/user/udftools-mac/archive/refs/tags/v2.3-macos.tar.gz"
+  homepage "https://github.com/caikn/homebrew-udftools"
+  url "https://github.com/caikn/homebrew-udftools/archive/refs/tags/v2.3.tar.gz"
   sha256 ""
   license "GPL-2.0-only"
-  version "2.3-macos"
 
   depends_on :macos
 
