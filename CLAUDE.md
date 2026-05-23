@@ -92,9 +92,9 @@ Key data flow: `main()` → `udf_init_disc()` → `parse_args()` → `split_spac
 
 The `udf_disc` struct (in `libudffs.h`) is the central state: it holds all UDF descriptors, the extent linked list, and write callback. `split_space()` in `mkudffs.c` is where block layout decisions happen.
 
-## Key Limitation
+## Known Behavior
 
-UDF 2.50+ spec requires a Metadata Partition for non-VAT (overwritable) disks. This implementation skips it. The resulting images work with macOS, Windows, and Linux UDF drivers but are not strictly spec-compliant for UDF 2.50 overwritable media. VAT-based (BDR) images are fully compliant but mount read-only on macOS.
+UDF 2.50+ images with Metadata Partition are spec-compliant and work on macOS, Windows, Linux, and game consoles (PS4/PS5). macOS mounts these images read-only because its UDF driver does not support writing to volumes with a Metadata Partition.
 
 ## License
 
