@@ -9,9 +9,9 @@ A macOS port of `mkudffs` from Linux [udftools](https://github.com/pali/udftools
 ## Build
 
 ```bash
-cd src
-make        # produces ./mkudffs
-make clean  # remove build artifacts
+cd mkudffs && make    # produces ./mkudffs
+cd udfinfo && make    # produces ./udfinfo
+cd udflabel && make   # produces ./udflabel
 ```
 
 No autotools, no dependencies beyond Xcode command-line tools. Single `make` invocation, C99.
@@ -58,21 +58,34 @@ All platform-specific changes are guarded by `#ifdef __APPLE__` so the code rema
 ## Architecture
 
 ```
-src/
-├── main.c          Entry point, I/O (open/write/seek), block device probing
-├── mkudffs.c       UDF structure setup (VRS, anchors, partitions, VDS, VAT, MBR)
-├── options.c       CLI argument parsing, media type detection
-├── defaults.c      Default UDF descriptor initializers (PVD, LVD, FSD, etc.)
-├── file.c          File/directory creation, FID insertion, space allocation
-├── extent.c        Extent list management (linked list of disc regions)
-├── unicode.c       OSTA Compressed Unicode encoding/decoding
-├── crc.c           UDF CRC-ITU-T (CCITT) implementation
-├── misc.c          Utilities (randu32, read/write_nointr, strtou32, UUID gen)
+include/            Shared headers
 ├── ecma_167.h      ECMA-167 on-disc structure definitions
 ├── osta_udf.h      OSTA UDF extension structure definitions
 ├── libudffs.h      Core types (udf_disc, udf_extent, udf_desc, flags, enums)
 ├── bswap.h         Endian conversion macros (le/be ↔ cpu)
 └── config.h        Build configuration (version, endianness)
+
+libudffs/           Shared library source
+├── crc.c           UDF CRC-ITU-T (CCITT) implementation
+├── extent.c        Extent list management (linked list of disc regions)
+├── unicode.c       OSTA Compressed Unicode encoding/decoding
+└── misc.c          Utilities (randu32, read/write_nointr, strtou32, UUID gen)
+
+mkudffs/            Create UDF filesystem images
+├── main.c          Entry point, I/O (open/write/seek), block device probing
+├── mkudffs.c       UDF structure setup (VRS, anchors, partitions, VDS, VAT, MBR)
+├── options.c       CLI argument parsing, media type detection
+├── defaults.c      Default UDF descriptor initializers (PVD, LVD, FSD, etc.)
+└── file.c          File/directory creation, FID insertion, space allocation
+
+udfinfo/            Show UDF filesystem information
+├── main.c          Entry point, output formatting
+├── options.c       CLI argument parsing
+└── readdisc.c      UDF structure reader (shared with udflabel)
+
+udflabel/           Show/change UDF filesystem label
+├── main.c          Entry point, label read/write logic
+└── options.c       CLI argument parsing
 ```
 
 Key data flow: `main()` → `udf_init_disc()` → `parse_args()` → `split_space()` → `setup_*()` → `write_disc()`
