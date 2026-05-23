@@ -111,7 +111,12 @@ tag query_tag(struct udf_disc *disc, struct udf_extent *ext, struct udf_desc *de
 	}
 	ret.descCRC = cpu_to_le16(crc);
 	if (ext->space_type & PSPACE)
-		ret.tagLocation = cpu_to_le32(desc->offset);
+	{
+		if ((disc->flags & FLAG_METADATA) && desc->offset >= disc->metadata_start)
+			ret.tagLocation = cpu_to_le32(desc->offset - disc->metadata_start);
+		else
+			ret.tagLocation = cpu_to_le32(desc->offset);
+	}
 	else
 		ret.tagLocation = cpu_to_le32(ext->start + desc->offset);
 	for (i=0; i<16; i++)
@@ -448,8 +453,11 @@ void insert_fid(struct udf_disc *disc, struct udf_extent *pspace, struct udf_des
 			fid->icb.extLength = cpu_to_le32(disc->blocksize * 2);
 		else
 			fid->icb.extLength = cpu_to_le32(disc->blocksize);
-		fid->icb.extLocation.logicalBlockNum = cpu_to_le32(desc->offset);
-		if (disc->flags & FLAG_VAT)
+		if (disc->flags & FLAG_METADATA)
+			fid->icb.extLocation.logicalBlockNum = cpu_to_le32(desc->offset - disc->metadata_start);
+		else
+			fid->icb.extLocation.logicalBlockNum = cpu_to_le32(desc->offset);
+		if (disc->flags & (FLAG_VAT | FLAG_METADATA))
 			fid->icb.extLocation.partitionReferenceNum = cpu_to_le16(1);
 		else
 			fid->icb.extLocation.partitionReferenceNum = cpu_to_le16(0);
@@ -481,8 +489,11 @@ void insert_fid(struct udf_disc *disc, struct udf_extent *pspace, struct udf_des
 			fid->icb.extLength = cpu_to_le32(disc->blocksize * 2);
 		else
 			fid->icb.extLength = cpu_to_le32(disc->blocksize);
-		fid->icb.extLocation.logicalBlockNum = cpu_to_le32(desc->offset);
-		if (disc->flags & FLAG_VAT)
+		if (disc->flags & FLAG_METADATA)
+			fid->icb.extLocation.logicalBlockNum = cpu_to_le32(desc->offset - disc->metadata_start);
+		else
+			fid->icb.extLocation.logicalBlockNum = cpu_to_le32(desc->offset);
+		if (disc->flags & (FLAG_VAT | FLAG_METADATA))
 			fid->icb.extLocation.partitionReferenceNum = cpu_to_le16(1);
 		else
 			fid->icb.extLocation.partitionReferenceNum = cpu_to_le16(0);
@@ -1159,6 +1170,20 @@ int udf_alloc_blocks(struct udf_disc *disc, struct udf_extent *pspace, uint32_t 
 		}
 		for (i = 0; i < blocks; ++i)
 			disc->vat[disc->vat_entries++] = cpu_to_le32(start+i);
+		return start;
+	}
+	else if (disc->flags & FLAG_METADATA)
+	{
+		uint32_t offset = 0, length = 0;
+		if (pspace->tail)
+		{
+			offset = pspace->tail->offset;
+			length = (pspace->tail->length + disc->blocksize - 1) / disc->blocksize;
+		}
+		if (offset + length > start)
+			start = offset + length;
+		if (start < disc->metadata_start)
+			start = disc->metadata_start;
 		return start;
 	}
 	else

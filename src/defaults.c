@@ -392,6 +392,32 @@ struct virtualPartitionMap default_virtmap =
 	.volSeqNum = constant_cpu_to_le16(1)
 };
 
+struct metadataPartitionMap default_metamap =
+{
+	.partitionMapType = 2,
+	.partitionMapLength = sizeof(struct metadataPartitionMap),
+	.partIdent =
+	{
+		.flags = 0,
+		.ident = UDF_ID_METADATA,
+		.identSuffix =
+		{
+			0x02,
+			0x50,
+			UDF_OS_CLASS_UNIX,
+			UDF_OS_ID_LINUX
+		},
+	},
+	.volSeqNum = constant_cpu_to_le16(1),
+	.partitionNum = constant_cpu_to_le16(0),
+	.metadataFileLoc = constant_cpu_to_le32(0),
+	.metadataMirrorFileLoc = constant_cpu_to_le32(1),
+	.metadataBitmapFileLoc = constant_cpu_to_le32(0xFFFFFFFF),
+	.allocUnitSize = constant_cpu_to_le32(1),
+	.alignUnitSize = constant_cpu_to_le16(1),
+	.flags = 0,
+};
+
 struct fileSetDesc default_fsd =
 {
 	.descTag =

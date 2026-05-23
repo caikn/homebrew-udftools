@@ -59,6 +59,8 @@
 
 #define FLAG_NO_WRITE			0x00004000
 
+#define FLAG_METADATA			0x00008000
+
 #define FLAG_BOOTAREA_PRESERVE		0x00010000
 #define FLAG_BOOTAREA_ERASE		0x00020000
 #define FLAG_BOOTAREA_MBR		0x00040000
@@ -148,6 +150,9 @@ struct udf_disc
 
 	short_ad			*metadata_filemap[2];
 	uint32_t			metadata_filemap_count[2];
+
+	uint32_t			metadata_start;
+	uint32_t			metadata_blocks;
 
 	struct fileSetDesc		*udf_fsd;
 

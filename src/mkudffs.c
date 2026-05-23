@@ -269,6 +269,8 @@ int udf_set_version(struct udf_disc *disc, uint16_t udf_rev)
 	uis->UDFRevision = cpu_to_le16(udf_rev);
 	uis = (struct UDFIdentSuffix *)default_virtmap.partIdent.identSuffix;
 	uis->UDFRevision = cpu_to_le16(udf_rev);
+	uis = (struct UDFIdentSuffix *)default_metamap.partIdent.identSuffix;
+	uis->UDFRevision = cpu_to_le16(udf_rev);
 
 	if (udf_rev >= 0x0200)
 	{
@@ -824,11 +826,35 @@ void setup_partition(struct udf_disc *disc)
 		fprintf(stderr, "%s: Error: Not enough blocks on device\n", appname);
 		exit(1);
 	}
-	setup_space(disc, pspace, 0);
-	setup_fileset(disc, pspace);
-	setup_root(disc, pspace);
-	if (disc->flags & FLAG_VAT)
-		setup_vat(disc, pspace);
+
+	if (disc->flags & FLAG_METADATA)
+	{
+		disc->metadata_start = 2;
+		setup_fileset(disc, pspace);
+		setup_root(disc, pspace);
+		/* Now we know how much metadata was allocated; calculate metadata_blocks */
+		{
+			uint32_t last_offset = 0;
+			struct udf_desc *d = pspace->head;
+			while (d)
+			{
+				uint32_t end = d->offset + (d->length + disc->blocksize - 1) / disc->blocksize;
+				if (end > last_offset)
+					last_offset = end;
+				d = d->next;
+			}
+			disc->metadata_blocks = last_offset - disc->metadata_start;
+		}
+		setup_metadata(disc, pspace);
+	}
+	else
+	{
+		setup_space(disc, pspace, 0);
+		setup_fileset(disc, pspace);
+		setup_root(disc, pspace);
+		if (disc->flags & FLAG_VAT)
+			setup_vat(disc, pspace);
+	}
 }
 
 int setup_space(struct udf_disc *disc, struct udf_extent *pspace, uint32_t offset)
@@ -994,8 +1020,11 @@ int setup_fileset(struct udf_disc *disc, struct udf_extent *pspace)
 
 	memset(&ad, 0, sizeof(ad));
 	ad.extLength = cpu_to_le32(disc->blocksize);
-	ad.extLocation.logicalBlockNum = cpu_to_le32(offset);
-	if (disc->flags & FLAG_VAT)
+	if (disc->flags & FLAG_METADATA)
+		ad.extLocation.logicalBlockNum = cpu_to_le32(offset - disc->metadata_start);
+	else
+		ad.extLocation.logicalBlockNum = cpu_to_le32(offset);
+	if (disc->flags & (FLAG_VAT | FLAG_METADATA))
 		ad.extLocation.partitionReferenceNum = cpu_to_le16(1);
 	else
 		ad.extLocation.partitionReferenceNum = cpu_to_le16(0);
@@ -1037,8 +1066,11 @@ int setup_root(struct udf_disc *disc, struct udf_extent *pspace)
 		disc->udf_fsd->rootDirectoryICB.extLength = cpu_to_le32(disc->blocksize * 2);
 	else
 		disc->udf_fsd->rootDirectoryICB.extLength = cpu_to_le32(disc->blocksize);
-	disc->udf_fsd->rootDirectoryICB.extLocation.logicalBlockNum = cpu_to_le32(offset);
-	if (disc->flags & FLAG_VAT)
+	if (disc->flags & FLAG_METADATA)
+		disc->udf_fsd->rootDirectoryICB.extLocation.logicalBlockNum = cpu_to_le32(offset - disc->metadata_start);
+	else
+		disc->udf_fsd->rootDirectoryICB.extLocation.logicalBlockNum = cpu_to_le32(offset);
+	if (disc->flags & (FLAG_VAT | FLAG_METADATA))
 		disc->udf_fsd->rootDirectoryICB.extLocation.partitionReferenceNum = cpu_to_le16(1);
 	else
 		disc->udf_fsd->rootDirectoryICB.extLocation.partitionReferenceNum = cpu_to_le16(0);
@@ -1657,5 +1689,146 @@ void add_type2_virtual_partition(struct udf_disc *disc, uint16_t partitionNum)
 		sizeof(uint32_t));
 }
 
+void add_type2_metadata_partition(struct udf_disc *disc, uint16_t partitionNum)
+{
+	struct metadataPartitionMap *pm;
+	int mtl = le32_to_cpu(disc->udf_lvd[0]->mapTableLength);
+	int npm = le32_to_cpu(disc->udf_lvd[0]->numPartitionMaps);
+
+	disc->udf_lvd[0] = realloc(disc->udf_lvd[0],
+		sizeof(struct logicalVolDesc) + mtl +
+		sizeof(struct metadataPartitionMap));
+
+	if (!disc->udf_lvd[0])
+	{
+		fprintf(stderr, "%s: Error: realloc failed: %s\n", appname, strerror(errno));
+		exit(1);
+	}
+
+	pm = (struct metadataPartitionMap *)&disc->udf_lvd[0]->partitionMaps[mtl];
+	mtl += sizeof(struct metadataPartitionMap);
+
+	disc->udf_lvd[0]->mapTableLength = cpu_to_le32(mtl);
+	disc->udf_lvd[0]->numPartitionMaps = cpu_to_le32(npm + 1);
+	memcpy(pm, &default_metamap, sizeof(struct metadataPartitionMap));
+	pm->partitionNum = cpu_to_le16(partitionNum);
+
+	disc->udf_lvid->numOfPartitions = cpu_to_le32(npm + 1);
+	disc->udf_lvid = realloc(disc->udf_lvid,
+		sizeof(struct logicalVolIntegrityDesc) +
+		sizeof(uint32_t) * 2 * (npm + 1) +
+		sizeof(struct logicalVolIntegrityDescImpUse));
+	if (!disc->udf_lvid)
+	{
+		fprintf(stderr, "%s: Error: realloc failed: %s\n", appname, strerror(errno));
+		exit(1);
+	}
+	memmove(&disc->udf_lvid->data[sizeof(uint32_t) * 2 * (npm + 1)],
+		&disc->udf_lvid->data[sizeof(uint32_t) * 2 * npm],
+		sizeof(struct logicalVolIntegrityDescImpUse));
+	memmove(&disc->udf_lvid->data[sizeof(uint32_t) * (npm + 1)],
+		&disc->udf_lvid->data[sizeof(uint32_t) * npm],
+		sizeof(uint32_t));
+}
+
+struct metadataPartitionMap *find_type2_metadata_partition(struct udf_disc *disc, uint16_t partitionNum)
+{
+	int i, npm, mtl = 0;
+	struct genericPartitionMap *pm;
+	struct udfPartitionMap2 *pm2;
+	struct metadataPartitionMap *mpm;
+
+	npm = le32_to_cpu(disc->udf_lvd[0]->numPartitionMaps);
+
+	for (i=0; i<npm; i++)
+	{
+		pm = (struct genericPartitionMap *)&disc->udf_lvd[0]->partitionMaps[mtl];
+		if (pm->partitionMapType == 2)
+		{
+			pm2 = (struct udfPartitionMap2 *)&disc->udf_lvd[0]->partitionMaps[mtl];
+			if (!strncmp((char *)pm2->partIdent.ident, UDF_ID_METADATA, strlen(UDF_ID_METADATA)))
+			{
+				mpm = (struct metadataPartitionMap *)&disc->udf_lvd[0]->partitionMaps[mtl];
+				if (le16_to_cpu(mpm->partitionNum) == partitionNum)
+					return mpm;
+			}
+		}
+		mtl += pm->partitionMapLength;
+	}
+	return NULL;
+}
+
+void setup_metadata(struct udf_disc *disc, struct udf_extent *pspace)
+{
+	struct udf_desc *desc;
+	struct extendedFileEntry *efe;
+	short_ad *sad;
+	struct metadataPartitionMap *mpm;
+	uint32_t meta_len;
+
+	mpm = find_type2_metadata_partition(disc, 0);
+	if (!mpm)
+		return;
+
+	meta_len = disc->metadata_blocks * disc->blocksize;
+
+	/* Metadata File EFE at partition block 0 */
+	desc = set_desc(pspace, TAG_IDENT_EFE, disc->metadata_start - 2, sizeof(struct extendedFileEntry) + sizeof(short_ad), NULL);
+	efe = (struct extendedFileEntry *)desc->data->buffer;
+	memcpy(efe, &default_efe, sizeof(struct extendedFileEntry));
+	memcpy(&efe->accessTime, &disc->udf_pvd[0]->recordingDateAndTime, sizeof(timestamp));
+	memcpy(&efe->modificationTime, &efe->accessTime, sizeof(timestamp));
+	memcpy(&efe->attrTime, &efe->accessTime, sizeof(timestamp));
+	memcpy(&efe->createTime, &efe->accessTime, sizeof(timestamp));
+	efe->icbTag.strategyType = cpu_to_le16(4);
+	efe->icbTag.numEntries = cpu_to_le16(1);
+	efe->icbTag.fileType = ICBTAG_FILE_TYPE_MAIN;
+	efe->icbTag.flags = cpu_to_le16(ICBTAG_FLAG_AD_SHORT);
+	efe->uid = cpu_to_le32(0);
+	efe->gid = cpu_to_le32(0);
+	efe->permissions = cpu_to_le32(0x00001CA5);
+	efe->fileLinkCount = cpu_to_le16(1);
+	efe->informationLength = cpu_to_le64(meta_len);
+	efe->objectSize = cpu_to_le64(meta_len);
+	efe->logicalBlocksRecorded = cpu_to_le64(disc->metadata_blocks);
+	efe->uniqueID = cpu_to_le64(0);
+	efe->lengthExtendedAttr = cpu_to_le32(0);
+	efe->lengthAllocDescs = cpu_to_le32(sizeof(short_ad));
+	sad = (short_ad *)efe->extendedAttrAndAllocDescs;
+	sad->extLength = cpu_to_le32(meta_len);
+	sad->extPosition = cpu_to_le32(disc->metadata_start);
+	efe->descTag = query_tag(disc, pspace, desc, 1);
+
+	/* Metadata Mirror File EFE at partition block 1 */
+	desc = set_desc(pspace, TAG_IDENT_EFE, disc->metadata_start - 1, sizeof(struct extendedFileEntry) + sizeof(short_ad), NULL);
+	efe = (struct extendedFileEntry *)desc->data->buffer;
+	memcpy(efe, &default_efe, sizeof(struct extendedFileEntry));
+	memcpy(&efe->accessTime, &disc->udf_pvd[0]->recordingDateAndTime, sizeof(timestamp));
+	memcpy(&efe->modificationTime, &efe->accessTime, sizeof(timestamp));
+	memcpy(&efe->attrTime, &efe->accessTime, sizeof(timestamp));
+	memcpy(&efe->createTime, &efe->accessTime, sizeof(timestamp));
+	efe->icbTag.strategyType = cpu_to_le16(4);
+	efe->icbTag.numEntries = cpu_to_le16(1);
+	efe->icbTag.fileType = ICBTAG_FILE_TYPE_MIRROR;
+	efe->icbTag.flags = cpu_to_le16(ICBTAG_FLAG_AD_SHORT);
+	efe->uid = cpu_to_le32(0);
+	efe->gid = cpu_to_le32(0);
+	efe->permissions = cpu_to_le32(0x00001CA5);
+	efe->fileLinkCount = cpu_to_le16(1);
+	efe->informationLength = cpu_to_le64(meta_len);
+	efe->objectSize = cpu_to_le64(meta_len);
+	efe->logicalBlocksRecorded = cpu_to_le64(disc->metadata_blocks);
+	efe->uniqueID = cpu_to_le64(0);
+	efe->lengthExtendedAttr = cpu_to_le32(0);
+	efe->lengthAllocDescs = cpu_to_le32(sizeof(short_ad));
+	sad = (short_ad *)efe->extendedAttrAndAllocDescs;
+	sad->extLength = cpu_to_le32(meta_len);
+	sad->extPosition = cpu_to_le32(disc->metadata_start);
+	efe->descTag = query_tag(disc, pspace, desc, 1);
+
+	/* Update partition map with actual locations */
+	mpm->metadataFileLoc = cpu_to_le32(disc->metadata_start - 2);
+	mpm->metadataMirrorFileLoc = cpu_to_le32(disc->metadata_start - 1);
+}
 
 char *udf_space_type_str[UDF_SPACE_TYPE_SIZE] = { "RESERVED", "VRS", "ANCHOR", "MVDS", "RVDS", "LVID", "STABLE", "SSPACE", "PSPACE", "USPACE", "BAD", "MBR" };

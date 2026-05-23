@@ -86,6 +86,9 @@ void setup_vat(struct udf_disc *, struct udf_extent *);
 void add_type1_partition(struct udf_disc *, uint16_t);
 void add_type2_sparable_partition(struct udf_disc *, uint16_t, uint8_t, uint16_t);
 void add_type2_virtual_partition(struct udf_disc *, uint16_t);
+void add_type2_metadata_partition(struct udf_disc *, uint16_t);
 struct sparablePartitionMap *find_type2_sparable_partition(struct udf_disc *, uint16_t);
+struct metadataPartitionMap *find_type2_metadata_partition(struct udf_disc *, uint16_t);
+void setup_metadata(struct udf_disc *, struct udf_extent *);
 
 #endif /* __MKUDFFS_H */

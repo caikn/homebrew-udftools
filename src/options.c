@@ -1050,15 +1050,11 @@ void parse_args(int argc, char *argv[], struct udf_disc *disc, char **device, in
 		add_type1_partition(disc, 0);
 	}
 
-	/* TODO: UDF 2.50+ require for non-VAT disks Metadata partition which mkudffs cannot create yet */
+	/* UDF 2.50+ require Metadata Partition for non-VAT disks */
 	if (disc->udf_rev >= 0x0250 && !(disc->flags & FLAG_VAT))
 	{
-#ifdef __APPLE__
-		fprintf(stderr, "%s: Warning: UDF 2.50+ without Metadata partition; image may not be fully spec-compliant but is readable by most implementations\n", appname);
-#else
-		fprintf(stderr, "%s: Error: UDF revision above 2.01 is not currently supported for specified media type\n", appname);
-		exit(1);
-#endif
+		disc->flags |= FLAG_METADATA;
+		add_type2_metadata_partition(disc, 0);
 	}
 
 	if ((disc->flags & FLAG_VAT) && (disc->flags & FLAG_SPACE))
@@ -1067,7 +1063,7 @@ void parse_args(int argc, char *argv[], struct udf_disc *disc, char **device, in
 		exit(1);
 	}
 
-	if (!(disc->flags & FLAG_VAT) && !(disc->flags & FLAG_SPACE))
+	if (!(disc->flags & (FLAG_VAT | FLAG_METADATA)) && !(disc->flags & FLAG_SPACE))
 		disc->flags |= FLAG_UNALLOC_BITMAP;
 
 	if ((disc->flags & FLAG_STRATEGY4096) && (disc->flags & FLAG_VAT))

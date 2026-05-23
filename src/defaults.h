@@ -41,6 +41,7 @@ extern struct sparablePartitionMap default_sparmap;
 extern struct virtualAllocationTable15 default_vat15;
 extern struct virtualAllocationTable20 default_vat20;
 extern struct virtualPartitionMap default_virtmap;
+extern struct metadataPartitionMap default_metamap;
 extern struct fileSetDesc default_fsd;
 extern struct fileEntry default_fe;
 extern struct extendedFileEntry default_efe;
