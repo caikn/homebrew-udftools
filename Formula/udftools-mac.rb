@@ -2,7 +2,7 @@ class UdftoolsMac < Formula
   desc "UDF filesystem utilities for macOS (mkudffs, udfinfo, udflabel)"
   homepage "https://github.com/caikn/homebrew-udftools"
   url "https://github.com/caikn/homebrew-udftools/archive/refs/tags/v2.3.tar.gz"
-  sha256 "cdea247d2a180f368a62e812cf22def715a8bb4df1a94ee01dcd6d923eb6f211"
+  sha256 "d546a05bbc57ae98777aa3b614e2f283cb14e79c4e0d06a8f92ceb08a3d5e9fe"
   license "GPL-2.0-only"
 
   depends_on :macos
