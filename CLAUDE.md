@@ -2,6 +2,23 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Rules
+
+- Never commit or push to git automatically. Always ask the user for confirmation before running `git commit` or `git push`.
+
+## C Development Guidelines
+
+- Target C99. No C11 or GNU extensions unless guarded by `#ifdef`.
+- All platform-specific code must be guarded by `#ifdef __APPLE__` with a Linux fallback.
+- Check every `malloc`/`calloc`/`realloc` return value. Print error and `exit(1)` on failure.
+- No buffer overflows: always bounds-check when copying into fixed-size arrays (use `strncpy`, `snprintf`, `memcpy` with explicit length).
+- All on-disc integers must use explicit fixed-width types (`uint8_t`, `uint16_t`, `uint32_t`, `uint64_t`) and convert endianness via `cpu_to_le*`/`le*_to_cpu` macros from `bswap.h`.
+- No uninitialized variables. Use `memset` for structs before populating fields.
+- Cast `lseek`/`read`/`write` return values and check for errors. Use `read_nointr`/`write_nointr` wrappers for I/O.
+- Compile with `-Wall -Wextra`. Fix warnings before committing (upstream string-length warnings in `defaults.c` are excepted).
+- Keep functions under ~100 lines where practical. Extract helpers for repeated patterns.
+- No dynamic memory without a clear ownership model. Document who frees what when lifetime is non-obvious.
+
 ## What This Is
 
 A macOS port of `mkudffs` from Linux [udftools](https://github.com/pali/udftools) (v2.3). Creates UDF filesystem images (1.01–2.60) on macOS, including UDF 2.50 for Blu-ray.
