@@ -112,7 +112,9 @@ tag query_tag(struct udf_disc *disc, struct udf_extent *ext, struct udf_desc *de
 	ret.descCRC = cpu_to_le16(crc);
 	if (ext->space_type & PSPACE)
 	{
-		if ((disc->flags & FLAG_METADATA) && desc->offset >= disc->metadata_start)
+		if ((disc->flags & FLAG_METADATA) && desc->offset >= disc->metadata_mirror_start && disc->metadata_mirror_start)
+			ret.tagLocation = cpu_to_le32(desc->offset - disc->metadata_mirror_start);
+		else if ((disc->flags & FLAG_METADATA) && desc->offset >= disc->metadata_start)
 			ret.tagLocation = cpu_to_le32(desc->offset - disc->metadata_start);
 		else
 			ret.tagLocation = cpu_to_le32(desc->offset);

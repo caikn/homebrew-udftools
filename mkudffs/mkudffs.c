@@ -845,6 +845,7 @@ void setup_partition(struct udf_disc *disc)
 			}
 			disc->metadata_blocks = last_offset - disc->metadata_start;
 		}
+		disc->metadata_mirror_start = pspace->blocks - disc->metadata_blocks;
 		setup_metadata(disc, pspace);
 	}
 	else
@@ -1043,8 +1044,14 @@ int setup_fileset(struct udf_disc *disc, struct udf_extent *pspace)
 		offset = ss->offset;
 
 		disc->udf_fsd->streamDirectoryICB.extLength = cpu_to_le32(disc->blocksize);
-		disc->udf_fsd->streamDirectoryICB.extLocation.logicalBlockNum = cpu_to_le32(offset);
-		disc->udf_fsd->streamDirectoryICB.extLocation.partitionReferenceNum = cpu_to_le16(0);
+		if (disc->flags & FLAG_METADATA)
+			disc->udf_fsd->streamDirectoryICB.extLocation.logicalBlockNum = cpu_to_le32(offset - disc->metadata_start);
+		else
+			disc->udf_fsd->streamDirectoryICB.extLocation.logicalBlockNum = cpu_to_le32(offset);
+		if (disc->flags & (FLAG_VAT | FLAG_METADATA))
+			disc->udf_fsd->streamDirectoryICB.extLocation.partitionReferenceNum = cpu_to_le16(1);
+		else
+			disc->udf_fsd->streamDirectoryICB.extLocation.partitionReferenceNum = cpu_to_le16(0);
 
 	}
 
@@ -1108,16 +1115,25 @@ int setup_root(struct udf_disc *disc, struct udf_extent *pspace)
 		{
 			struct extendedFileEntry *efe;
 			struct udf_desc *ss;
+			uint32_t ss_offset = le32_to_cpu(disc->udf_fsd->streamDirectoryICB.extLocation.logicalBlockNum);
+			if (disc->flags & FLAG_METADATA)
+				ss_offset += disc->metadata_start;
 
-			ss = find_desc(pspace, le32_to_cpu(disc->udf_fsd->streamDirectoryICB.extLocation.logicalBlockNum));
+			ss = find_desc(pspace, ss_offset);
 #if 0
 			nat = udf_create(disc, pspace, NULL, 0, offset+1, NULL, FID_FILE_CHAR_DIRECTORY, ICBTAG_FILE_TYPE_STREAMDIR, 0);
 			insert_fid(disc, pspace, nat, nat, NULL, 0, FID_FILE_CHAR_DIRECTORY | FID_FILE_CHAR_PARENT);
 			offset = nat->offset;
 
 			disc->udf_fsd->streamDirectoryICB.extLength = cpu_to_le32(disc->blocksize);
-			disc->udf_fsd->streamDirectoryICB.extLocation.logicalBlockNum = cpu_to_le32(offset);
-			disc->udf_fsd->streamDirectoryICB.extLocation.partitionReferenceNum = cpu_to_le16(0);
+			if (disc->flags & FLAG_METADATA)
+				disc->udf_fsd->streamDirectoryICB.extLocation.logicalBlockNum = cpu_to_le32(offset - disc->metadata_start);
+			else
+				disc->udf_fsd->streamDirectoryICB.extLocation.logicalBlockNum = cpu_to_le32(offset);
+			if (disc->flags & (FLAG_VAT | FLAG_METADATA))
+				disc->udf_fsd->streamDirectoryICB.extLocation.partitionReferenceNum = cpu_to_le16(1);
+			else
+				disc->udf_fsd->streamDirectoryICB.extLocation.partitionReferenceNum = cpu_to_le16(0);
 #endif
 			nat = udf_create(disc, pspace, (const dchars *)"\x08" "*UDF Non-Allocatable Space", 27, offset+1, ss, FID_FILE_CHAR_METADATA, ICBTAG_FILE_TYPE_REGULAR, ICBTAG_FLAG_STREAM | ICBTAG_FLAG_SYSTEM);
 
@@ -1799,7 +1815,7 @@ void setup_metadata(struct udf_disc *disc, struct udf_extent *pspace)
 	sad->extPosition = cpu_to_le32(disc->metadata_start);
 	efe->descTag = query_tag(disc, pspace, desc, 1);
 
-	/* Metadata Mirror File EFE at partition block 1 */
+	/* Metadata Mirror File EFE at partition block 1 — points to mirror copy at end of partition */
 	desc = set_desc(pspace, TAG_IDENT_EFE, disc->metadata_start - 1, sizeof(struct extendedFileEntry) + sizeof(short_ad), NULL);
 	efe = (struct extendedFileEntry *)desc->data->buffer;
 	memcpy(efe, &default_efe, sizeof(struct extendedFileEntry));
@@ -1823,8 +1839,41 @@ void setup_metadata(struct udf_disc *disc, struct udf_extent *pspace)
 	efe->lengthAllocDescs = cpu_to_le32(sizeof(short_ad));
 	sad = (short_ad *)efe->extendedAttrAndAllocDescs;
 	sad->extLength = cpu_to_le32(meta_len);
-	sad->extPosition = cpu_to_le32(disc->metadata_start);
+	sad->extPosition = cpu_to_le32(disc->metadata_mirror_start);
 	efe->descTag = query_tag(disc, pspace, desc, 1);
+
+	/* Write duplicate metadata content at mirror location */
+	{
+		struct udf_desc *src = pspace->head;
+		while (src)
+		{
+			if (src->offset >= disc->metadata_start && src->offset < disc->metadata_start + disc->metadata_blocks)
+			{
+				uint32_t mirror_offset = disc->metadata_mirror_start + (src->offset - disc->metadata_start);
+				struct udf_desc *mirror_desc = set_desc(pspace, src->ident, mirror_offset, src->length, NULL);
+				struct udf_data *src_data = src->data;
+				struct udf_data *dst_data = mirror_desc->data;
+				uint64_t copied = 0;
+				while (src_data && copied < src->length)
+				{
+					if (copied + src_data->length > dst_data->length)
+					{
+						memcpy((uint8_t *)dst_data->buffer + copied, src_data->buffer, dst_data->length - copied);
+					}
+					else
+					{
+						memcpy((uint8_t *)dst_data->buffer + copied, src_data->buffer, src_data->length);
+					}
+					copied += src_data->length;
+					src_data = src_data->next;
+				}
+				/* Recompute tag for the mirror descriptor's location */
+				tag *t = (tag *)dst_data->buffer;
+				*t = query_tag(disc, pspace, mirror_desc, 1);
+			}
+			src = src->next;
+		}
+	}
 
 	/* Update partition map with actual locations */
 	mpm->metadataFileLoc = cpu_to_le32(disc->metadata_start - 2);

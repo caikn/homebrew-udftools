@@ -153,6 +153,7 @@ struct udf_disc
 
 	uint32_t			metadata_start;
 	uint32_t			metadata_blocks;
+	uint32_t			metadata_mirror_start;
 
 	struct fileSetDesc		*udf_fsd;
 
