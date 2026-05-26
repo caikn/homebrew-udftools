@@ -25,7 +25,7 @@
 #define _OPTIONS_H 1
 
 void usage(void);
-void parse_args(int, char *[], struct udf_disc *, char **, int *, int *, int *);
+void parse_args(int, char *[], struct udf_disc *, char **, int *, int *, int *, uint32_t *);
 
 /*
  * Command line option token values.
@@ -71,5 +71,6 @@ void parse_args(int, char *[], struct udf_disc *, char **, int *, int *, int *);
 #define OPT_OWNER	0x2015
 #define OPT_ORG		0x2016
 #define OPT_CONTACT	0x2017
+#define OPT_DISC_CAP	0x2018
 
 #endif /* _OPTIONS_H */
