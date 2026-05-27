@@ -66,6 +66,8 @@
 #define FLAG_BOOTAREA_MBR		0x00040000
 #define FLAG_BOOTAREA_MASK		(FLAG_BOOTAREA_PRESERVE|FLAG_BOOTAREA_ERASE|FLAG_BOOTAREA_MBR)
 
+#define FLAG_BDROM			0x00080000
+
 struct udf_extent;
 struct udf_desc;
 struct udf_data;
@@ -127,6 +129,8 @@ struct udf_disc
 
 	int				(*write)(struct udf_disc *, struct udf_extent *);
 	void				*write_data;
+	void				(*progress)(struct udf_disc *, const char *, uint64_t, uint64_t);
+	void				*progress_data;
 
 	struct volStructDesc		*udf_vrs[3];
 	struct anchorVolDescPtr		*udf_anchor[3];
@@ -153,6 +157,7 @@ struct udf_disc
 
 	uint32_t			metadata_start;
 	uint32_t			metadata_blocks;
+	uint32_t			metadata_mirror_start;
 
 	struct fileSetDesc		*udf_fsd;
 

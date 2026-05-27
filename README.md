@@ -6,7 +6,8 @@ A macOS port of [udftools](https://github.com/pali/udftools) (v2.3) — the Linu
 
 | Tool | Description |
 |------|-------------|
-| `mkudffs` | Create UDF filesystem images |
+| `mkbdrom` | Create UDF 2.50 BD-ROM images directly from a source directory (PS4/PS5 compatible) |
+| `mkudffs` | Create UDF filesystem images (general purpose) |
 | `udfinfo` | Display UDF filesystem information |
 | `udflabel` | Show or change UDF filesystem label/UUID |
 
@@ -50,13 +51,55 @@ make
 sudo make install
 ```
 
-This installs `mkudffs`, `udfinfo`, and `udflabel` to `/usr/local/bin/`. To customize the prefix:
+This installs `mkbdrom`, `mkudffs`, `udfinfo`, and `udflabel` to `/usr/local/bin/`. To customize the prefix:
 
 ```bash
 make install PREFIX=/opt/udftools
 ```
 
+### Regression Check
+
+Run the mkbdrom regression script to verify anchor placement and metadata sizing:
+
+```bash
+./scripts/test_mkbdrom_regression.sh
+```
+
+This tests that:
+- The final block count matches the physical file size (no stale anchors from a post-layout resize)
+- Metadata partition size is credible for the number of files packed (not frozen before packing)
+
 ## Usage
+
+### mkbdrom — Create BD-ROM Image from Directory
+
+Creates a UDF 2.50 BD-ROM ISO directly from a source directory. No mounting required — files are packed directly into the image. This is the recommended tool for creating PS4/PS5 compatible Blu-ray disc images on macOS.
+
+In most cases, the best choice is to omit `--disc-capacity` and let `mkbdrom` create the smallest valid UDF 2.50 image that fits the source content plus metadata. Use `--disc-capacity` only when you need a specific final image geometry, such as matching a known disc size.
+
+```bash
+# Recommended: create the minimum-size valid BD-ROM image
+mkbdrom --source /path/to/content --label "BLURAY" output.iso
+
+# Optional: force a 25 GB BD-R-sized image
+mkbdrom --source /path/to/content --label "BLURAY" --disc-capacity 12219392 output.iso
+
+# Source directory should contain standard BD-ROM structure:
+# content/
+# ├── BDMV/
+# │   ├── index.bdmv
+# │   ├── MovieObject.bdmv
+# │   ├── STREAM/*.m2ts
+# │   ├── CLIPINF/*.clpi
+# │   └── PLAYLIST/*.mpls
+# └── CERTIFICATE/
+```
+
+Options:
+- `--source <dir>` — Source directory containing BDMV/CERTIFICATE structure
+- `--label <name>` — Volume label (default: BLURAY)
+- `--disc-capacity <blocks>` — Optional final image size in blocks; omit it unless you need a specific target geometry such as 12219392 for 25GB BD-R
+- `--blocksize <n>` — Block size in bytes (default: 2048)
 
 ### mkudffs — Create UDF Filesystem
 
@@ -125,7 +168,8 @@ udflabel --lvid="My Volume" --vid="MYVOL" --uuid=random image.iso
 ```
 include/        Shared headers (ecma_167.h, osta_udf.h, libudffs.h, bswap.h, config.h)
 libudffs/       Shared library source (crc, extent, unicode, misc)
-mkudffs/        mkudffs tool source
+mkbdrom/        mkbdrom tool source (BD-ROM image creator)
+mkudffs/        mkudffs tool source (general UDF formatter)
 udfinfo/        udfinfo tool source
 udflabel/       udflabel tool source
 ```
@@ -135,21 +179,26 @@ Mirrors the [upstream udftools](https://github.com/pali/udftools) layout.
 ## BD-ROM Workflow (PS4/PS5 Compatible)
 
 ```bash
-# 1. Create UDF 2.50 image
-mkudffs --new-file --udfrev=2.50 --blocksize=2048 --label="BLURAY" disc.iso 10000000
+# 1. Create BD-ROM image directly from source content
+# Recommended: let mkbdrom choose the minimum valid size
+mkbdrom --source /path/to/content --label "BLURAY" disc.iso
 
-# 2. Mount and populate
-hdiutil attach -nobrowse disc.iso
-cp -R /path/to/BDMV /Volumes/BLURAY/
-cp -R /path/to/CERTIFICATE /Volumes/BLURAY/
-hdiutil detach /dev/diskN
+# Optional: if you need a full 25 GB BD-R-sized image
+# mkbdrom --source /path/to/content --label "BLURAY" --disc-capacity 12219392 disc.iso
 
-# 3. Verify
+# 2. Verify
 udfinfo disc.iso
 
-# 4. Burn
+# 3. Test with VLC
+open -a VLC "bluray:///path/to/disc.iso"
+
+# 4. Burn to BD-R
 hdiutil burn disc.iso
 ```
+
+Common disc capacities (in 2048-byte blocks):
+- BD-R SL (25 GB): `--disc-capacity 12219392`
+- BD-R DL (50 GB): `--disc-capacity 24438784`
 
 ## License
 

@@ -407,6 +407,7 @@ int main(int argc, char *argv[])
 	int create_new_file = 0;
 	int blocksize = -1;
 	int media;
+	uint32_t disc_capacity = 0;
 	size_t len;
 
 	if (fcntl(0, F_GETFL) < 0 && open("/dev/null", O_RDONLY) < 0)
@@ -422,7 +423,7 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "%s: Error: Cannot set locale/codeset, fallback to default 7bit C ASCII\n", appname);
 
 	udf_init_disc(&disc);
-	parse_args(argc, argv, &disc, &filename, &create_new_file, &blocksize, &media);
+	parse_args(argc, argv, &disc, &filename, &create_new_file, &blocksize, &media, &disc_capacity);
 
 	if (disc.flags & FLAG_NO_WRITE)
 		printf("Note: Not writing to device, just simulating\n");
@@ -462,6 +463,16 @@ int main(int argc, char *argv[])
 	{
 		fprintf(stderr, "%s: Error: Device '%s' is empty\n", appname, filename);
 		exit(1);
+	}
+
+	if (disc_capacity)
+	{
+		if (disc_capacity < disc.blocks)
+		{
+			fprintf(stderr, "%s: Error: --disc-capacity (%"PRIu32") is smaller than block-count (%"PRIu32")\n", appname, disc_capacity, disc.blocks);
+			exit(1);
+		}
+		disc.blocks = disc_capacity;
 	}
 
 	disc.head->blocks = disc.blocks;

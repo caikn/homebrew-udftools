@@ -85,6 +85,7 @@ static struct option long_options[] = {
 	{ "new-file", no_argument, NULL, OPT_NEW_FILE },
 	{ "no-write", no_argument, NULL, OPT_NO_WRITE },
 	{ "read-only", no_argument, NULL, OPT_READ_ONLY },
+	{ "disc-capacity", required_argument, NULL, OPT_DISC_CAP },
 	{ 0, 0, NULL, 0 },
 };
 
@@ -134,7 +135,7 @@ void usage(void)
 	exit(1);
 }
 
-void parse_args(int argc, char *argv[], struct udf_disc *disc, char **device, int *create_new_file, int *blocksize, int *media_ptr)
+void parse_args(int argc, char *argv[], struct udf_disc *disc, char **device, int *create_new_file, int *blocksize, int *media_ptr, uint32_t *disc_capacity)
 {
 	int retval;
 	int i;
@@ -277,6 +278,16 @@ void parse_args(int argc, char *argv[], struct udf_disc *disc, char **device, in
 				if (failed)
 				{
 					fprintf(stderr, "%s: Error: Invalid value for option --minblocks\n", appname);
+					exit(1);
+				}
+				break;
+			}
+			case OPT_DISC_CAP:
+			{
+				*disc_capacity = strtou32(optarg, 0, &failed);
+				if (failed || *disc_capacity == 0)
+				{
+					fprintf(stderr, "%s: Error: Invalid value for option --disc-capacity\n", appname);
 					exit(1);
 				}
 				break;

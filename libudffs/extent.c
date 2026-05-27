@@ -479,6 +479,13 @@ struct udf_desc *set_desc(struct udf_extent *ext, uint16_t ident, uint32_t offse
 		ext->head = ext->tail = new_desc;
 		new_desc->next = new_desc->prev = NULL;
 	}
+	else if (offset > ext->tail->offset)
+	{
+		new_desc->next = NULL;
+		new_desc->prev = ext->tail;
+		ext->tail->next = new_desc;
+		ext->tail = new_desc;
+	}
 	else
 	{
 		start_desc = find_desc(ext, offset);
