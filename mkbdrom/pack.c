@@ -264,26 +264,38 @@ static int pack_file(struct udf_disc *disc, struct udf_extent *pspace, const cha
 	efe->informationLength = cpu_to_le64(st.st_size);
 	efe->objectSize = cpu_to_le64(st.st_size);
 	efe->logicalBlocksRecorded = cpu_to_le64((st.st_size + disc->blocksize - 1) / disc->blocksize);
-	efe->lengthAllocDescs = cpu_to_le32(sizeof(long_ad));
 
-	size_t new_len = sizeof(struct extendedFileEntry) + sizeof(long_ad);
-	void *new_buf = realloc(file_desc->data->buffer, new_len);
-	if (!new_buf)
 	{
-		fprintf(stderr, "%s: Error: realloc failed: %s\n", appname, strerror(errno));
-		return -1;
-	}
-	file_desc->data->buffer = new_buf;
-	file_desc->data->length = new_len;
-	file_desc->length = new_len;
+		uint64_t remaining = st.st_size;
+		uint32_t max_extent = (uint32_t)0x3FFFF800 & ~(disc->blocksize - 1);
+		uint32_t num_ads = (uint32_t)((remaining + max_extent - 1) / max_extent);
+		size_t new_len = sizeof(struct extendedFileEntry) + num_ads * sizeof(long_ad);
+		void *new_buf = realloc(file_desc->data->buffer, new_len);
+		long_ad *lad;
+		uint32_t i;
 
-	efe = (struct extendedFileEntry *)file_desc->data->buffer;
-	{
-		long_ad *lad = (long_ad *)(efe->extendedAttrAndAllocDescs);
-		lad->extLength = cpu_to_le32((uint32_t)st.st_size);
-		lad->extLocation.logicalBlockNum = cpu_to_le32(0);
-		lad->extLocation.partitionReferenceNum = cpu_to_le16(0);
-		memset(lad->impUse, 0, sizeof(lad->impUse));
+		if (!new_buf)
+		{
+			fprintf(stderr, "%s: Error: realloc failed: %s\n", appname, strerror(errno));
+			return -1;
+		}
+		file_desc->data->buffer = new_buf;
+		file_desc->data->length = new_len;
+		file_desc->length = new_len;
+
+		efe = (struct extendedFileEntry *)file_desc->data->buffer;
+		efe->lengthAllocDescs = cpu_to_le32(num_ads * sizeof(long_ad));
+		lad = (long_ad *)(efe->extendedAttrAndAllocDescs);
+
+		for (i = 0; i < num_ads; i++)
+		{
+			uint32_t chunk = remaining > max_extent ? max_extent : (uint32_t)remaining;
+			lad[i].extLength = cpu_to_le32(chunk);
+			lad[i].extLocation.logicalBlockNum = cpu_to_le32(0);
+			lad[i].extLocation.partitionReferenceNum = cpu_to_le16(0);
+			memset(lad[i].impUse, 0, sizeof(lad[i].impUse));
+			remaining -= chunk;
+		}
 	}
 
 	efe->descTag = query_tag(disc, pspace, file_desc, 1);
@@ -388,7 +400,9 @@ uint32_t layout_file_data(struct udf_disc *disc, struct udf_extent *pspace, uint
 	{
 		struct extendedFileEntry *efe;
 		long_ad *lad;
-		uint32_t data_blocks;
+		uint32_t num_ads;
+		uint32_t i;
+		uint32_t block_offset;
 
 		if (entry->size == 0)
 		{
@@ -396,14 +410,23 @@ uint32_t layout_file_data(struct udf_disc *disc, struct udf_extent *pspace, uint
 			continue;
 		}
 
-		data_blocks = (uint32_t)((entry->size + disc->blocksize - 1) / disc->blocksize);
 		entry->data_start = next_offset;
 		efe = (struct extendedFileEntry *)entry->desc->data->buffer;
+		num_ads = le32_to_cpu(efe->lengthAllocDescs) / sizeof(long_ad);
 		lad = (long_ad *)(efe->extendedAttrAndAllocDescs);
-		lad->extLocation.logicalBlockNum = cpu_to_le32(entry->data_start);
-		lad->extLocation.partitionReferenceNum = cpu_to_le16(0);
+
+		block_offset = entry->data_start;
+		for (i = 0; i < num_ads; i++)
+		{
+			uint32_t ext_bytes = le32_to_cpu(lad[i].extLength) & 0x3FFFFFFF;
+			uint32_t ext_blocks = (ext_bytes + disc->blocksize - 1) / disc->blocksize;
+			lad[i].extLocation.logicalBlockNum = cpu_to_le32(block_offset);
+			lad[i].extLocation.partitionReferenceNum = cpu_to_le16(0);
+			block_offset += ext_blocks;
+		}
+
 		efe->descTag = query_tag(disc, pspace, entry->desc, 1);
-		next_offset += data_blocks;
+		next_offset = block_offset;
 		entry = entry->next;
 	}
 
