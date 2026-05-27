@@ -54,7 +54,11 @@ If omitted, the default label is
 Set the target image size in logical blocks. The value must be large enough to
 hold both the packed file data and the UDF metadata structures. If omitted,
 .B mkbdrom
-automatically chooses the minimum required size.
+automatically chooses the minimum required size. This is the recommended
+default for normal use. Specify
+.B --disc-capacity
+only when you need a particular final image geometry, such as matching a known
+BD media size.
 
 .TP
 .BI "--blocksize " bytes
@@ -73,7 +77,8 @@ Create a minimum-size BD-ROM image from a prepared content tree:
 .RE
 
 .TP
-Create a 25 GB single-layer BD-R sized image with an explicit label:
+Create a 25 GB single-layer BD-R sized image only when a fixed final geometry
+is required:
 .RS
 .B mkbdrom --source /path/to/content --label BLURAY --disc-capacity 12219392 output.iso
 .RE

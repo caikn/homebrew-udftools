@@ -75,8 +75,13 @@ This tests that:
 
 Creates a UDF 2.50 BD-ROM ISO directly from a source directory. No mounting required — files are packed directly into the image. This is the recommended tool for creating PS4/PS5 compatible Blu-ray disc images on macOS.
 
+In most cases, the best choice is to omit `--disc-capacity` and let `mkbdrom` create the smallest valid UDF 2.50 image that fits the source content plus metadata. Use `--disc-capacity` only when you need a specific final image geometry, such as matching a known disc size.
+
 ```bash
-# Create BD-ROM image from source directory
+# Recommended: create the minimum-size valid BD-ROM image
+mkbdrom --source /path/to/content --label "BLURAY" output.iso
+
+# Optional: force a 25 GB BD-R-sized image
 mkbdrom --source /path/to/content --label "BLURAY" --disc-capacity 12219392 output.iso
 
 # Source directory should contain standard BD-ROM structure:
@@ -93,7 +98,7 @@ mkbdrom --source /path/to/content --label "BLURAY" --disc-capacity 12219392 outp
 Options:
 - `--source <dir>` — Source directory containing BDMV/CERTIFICATE structure
 - `--label <name>` — Volume label (default: BLURAY)
-- `--disc-capacity <blocks>` — Target BD-R capacity in blocks (12219392 for 25GB BD-R)
+- `--disc-capacity <blocks>` — Optional final image size in blocks; omit it unless you need a specific target geometry such as 12219392 for 25GB BD-R
 - `--blocksize <n>` — Block size in bytes (default: 2048)
 
 ### mkudffs — Create UDF Filesystem
@@ -175,7 +180,11 @@ Mirrors the [upstream udftools](https://github.com/pali/udftools) layout.
 
 ```bash
 # 1. Create BD-ROM image directly from source content
-mkbdrom --source /path/to/content --label "BLURAY" --disc-capacity 12219392 disc.iso
+# Recommended: let mkbdrom choose the minimum valid size
+mkbdrom --source /path/to/content --label "BLURAY" disc.iso
+
+# Optional: if you need a full 25 GB BD-R-sized image
+# mkbdrom --source /path/to/content --label "BLURAY" --disc-capacity 12219392 disc.iso
 
 # 2. Verify
 udfinfo disc.iso
