@@ -1780,7 +1780,10 @@ void setup_metadata(struct udf_disc *disc, struct udf_extent *pspace)
 	struct extendedFileEntry *efe;
 	short_ad *sad;
 	struct metadataPartitionMap *mpm;
+	struct udf_desc *src;
 	uint32_t meta_len;
+	uint64_t copied_descs = 0;
+	uint64_t total_descs = 0;
 
 	mpm = find_type2_metadata_partition(disc, 0);
 	if (!mpm)
@@ -1843,35 +1846,45 @@ void setup_metadata(struct udf_disc *disc, struct udf_extent *pspace)
 	efe->descTag = query_tag(disc, pspace, desc, 1);
 
 	/* Write duplicate metadata content at mirror location */
+	for (src = pspace->head; src; src = src->next)
 	{
-		struct udf_desc *src = pspace->head;
-		while (src)
+		if (src->offset >= disc->metadata_start && src->offset < disc->metadata_start + disc->metadata_blocks)
+			total_descs++;
+	}
+
+	for (src = pspace->head; src; src = src->next)
+	{
+		if (src->offset >= disc->metadata_start && src->offset < disc->metadata_start + disc->metadata_blocks)
 		{
-			if (src->offset >= disc->metadata_start && src->offset < disc->metadata_start + disc->metadata_blocks)
+			uint32_t mirror_offset = disc->metadata_mirror_start + (src->offset - disc->metadata_start);
+			struct udf_desc *mirror_desc = set_desc(pspace, src->ident, mirror_offset, src->length, NULL);
+			struct udf_data *src_data = src->data;
+			struct udf_data *dst_data = mirror_desc->data;
+			uint64_t copied = 0;
+
+			while (src_data && copied < src->length)
 			{
-				uint32_t mirror_offset = disc->metadata_mirror_start + (src->offset - disc->metadata_start);
-				struct udf_desc *mirror_desc = set_desc(pspace, src->ident, mirror_offset, src->length, NULL);
-				struct udf_data *src_data = src->data;
-				struct udf_data *dst_data = mirror_desc->data;
-				uint64_t copied = 0;
-				while (src_data && copied < src->length)
+				if (copied + src_data->length > dst_data->length)
 				{
-					if (copied + src_data->length > dst_data->length)
-					{
-						memcpy((uint8_t *)dst_data->buffer + copied, src_data->buffer, dst_data->length - copied);
-					}
-					else
-					{
-						memcpy((uint8_t *)dst_data->buffer + copied, src_data->buffer, src_data->length);
-					}
-					copied += src_data->length;
-					src_data = src_data->next;
+					memcpy((uint8_t *)dst_data->buffer + copied, src_data->buffer, dst_data->length - copied);
 				}
-				/* Recompute tag for the mirror descriptor's location */
+				else
+				{
+					memcpy((uint8_t *)dst_data->buffer + copied, src_data->buffer, src_data->length);
+				}
+				copied += src_data->length;
+				src_data = src_data->next;
+			}
+
+			/* Recompute tag for the mirror descriptor's location */
+			{
 				tag *t = (tag *)dst_data->buffer;
 				*t = query_tag(disc, pspace, mirror_desc, 1);
 			}
-			src = src->next;
+
+			copied_descs++;
+			if (disc->progress)
+				disc->progress(disc, "Mirroring metadata", copied_descs, total_descs);
 		}
 	}
 

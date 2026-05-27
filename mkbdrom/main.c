@@ -24,6 +24,53 @@
 
 const char *appname;
 
+struct progress_state
+{
+	int enabled;
+	int last_percent;
+	char last_label[64];
+};
+
+static void print_phase_progress(struct udf_disc *disc, const char *label, uint64_t current, uint64_t total)
+{
+	struct progress_state *state = disc->progress_data;
+	int percent;
+	int filled;
+	int i;
+
+	if (!state || !state->enabled)
+		return;
+
+	if (total == 0)
+		percent = 100;
+	else
+		percent = (int)((current * 100) / total);
+
+	if (percent == state->last_percent && strcmp(state->last_label, label) == 0)
+		return;
+
+	filled = percent / 5;
+	if (filled > 20)
+		filled = 20;
+
+	fprintf(stderr, "\r%s: [", label);
+	for (i = 0; i < 20; i++)
+		fputc(i < filled ? '#' : '.', stderr);
+	fprintf(stderr, "] %3d%% (%"PRIu64"/%"PRIu64")", percent, current, total);
+	fflush(stderr);
+
+	state->last_percent = percent;
+	strncpy(state->last_label, label, sizeof(state->last_label) - 1);
+	state->last_label[sizeof(state->last_label) - 1] = '\0';
+
+	if (current >= total)
+	{
+		fputc('\n', stderr);
+		state->last_percent = -1;
+		state->last_label[0] = '\0';
+	}
+}
+
 static void init_bdrom_disc(struct udf_disc *disc, uint32_t blocksize, uint32_t blocks, const char *label)
 {
 	int i;
@@ -237,6 +284,7 @@ int main(int argc, char *argv[])
 {
 	struct udf_disc plan_disc;
 	struct udf_disc disc;
+	struct progress_state progress = { 0, -1, { 0 } };
 	struct udf_extent *plan_pspace;
 	struct udf_extent *pspace;
 	char *source_dir = NULL;
@@ -323,6 +371,9 @@ int main(int argc, char *argv[])
 
 	disc.write = write_func;
 	disc.write_data = &fd;
+	progress.enabled = isatty(STDERR_FILENO);
+	disc.progress = print_phase_progress;
+	disc.progress_data = &progress;
 
 	split_space(&disc);
 	setup_vrs(&disc);
@@ -334,6 +385,8 @@ int main(int argc, char *argv[])
 	pack_source_tree(&disc, pspace, source_dir);
 	disc.metadata_mirror_start = pspace->blocks - disc.metadata_blocks;
 	setup_metadata(&disc, pspace);
+	disc.progress = NULL;
+	disc.progress_data = NULL;
 	setup_vds(&disc);
 
 	printf("Writing image: %s\n", output_file);

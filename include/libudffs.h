@@ -127,6 +127,8 @@ struct udf_disc
 
 	int				(*write)(struct udf_disc *, struct udf_extent *);
 	void				*write_data;
+	void				(*progress)(struct udf_disc *, const char *, uint64_t, uint64_t);
+	void				*progress_data;
 
 	struct volStructDesc		*udf_vrs[3];
 	struct anchorVolDescPtr		*udf_anchor[3];

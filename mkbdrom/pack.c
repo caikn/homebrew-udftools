@@ -21,6 +21,42 @@ extern const char *appname;
 struct file_entry *file_list_head = NULL;
 static struct file_entry *file_list_tail = NULL;
 
+static uint64_t total_file_bytes(void)
+{
+	struct file_entry *entry = file_list_head;
+	uint64_t total = 0;
+
+	while (entry)
+	{
+		total += entry->size;
+		entry = entry->next;
+	}
+
+	return total;
+}
+
+static void print_progress(uint64_t written, uint64_t total)
+{
+	int percent;
+	int filled;
+	int i;
+
+	if (total == 0)
+		percent = 100;
+	else
+		percent = (int)((written * 100) / total);
+
+	filled = percent / 5;
+	if (filled > 20)
+		filled = 20;
+
+	fprintf(stderr, "\rWriting file data: [");
+	for (i = 0; i < 20; i++)
+		fputc(i < filled ? '#' : '.', stderr);
+	fprintf(stderr, "] %3d%% (%"PRIu64"/%"PRIu64" bytes)", percent, written, total);
+	fflush(stderr);
+}
+
 void reset_file_entries(void)
 {
 	struct file_entry *entry = file_list_head;
@@ -217,6 +253,13 @@ int write_file_data(int fd, struct udf_disc *disc, struct udf_extent *pspace)
 	struct file_entry *fe = file_list_head;
 	char buf[65536];
 	uint32_t pspace_start = pspace->start;
+	uint64_t total_bytes = total_file_bytes();
+	uint64_t written_bytes = 0;
+	int show_progress = isatty(STDERR_FILENO);
+	int last_percent = -1;
+
+	if (show_progress)
+		print_progress(0, total_bytes);
 
 	while (fe)
 	{
@@ -240,6 +283,7 @@ int write_file_data(int fd, struct udf_disc *disc, struct udf_extent *pspace)
 		{
 			size_t chunk = remaining > sizeof(buf) ? sizeof(buf) : remaining;
 			ssize_t n = read_nointr(src_fd, buf, chunk);
+			int percent;
 			if (n <= 0)
 			{
 				fprintf(stderr, "%s: Error: read '%s' failed: %s\n", appname, fe->source_path, strerror(errno));
@@ -252,10 +296,27 @@ int write_file_data(int fd, struct udf_disc *disc, struct udf_extent *pspace)
 				close(src_fd);
 				return -1;
 			}
+			written_bytes += n;
+			if (show_progress)
+			{
+				if (total_bytes == 0)
+					percent = 100;
+				else
+					percent = (int)((written_bytes * 100) / total_bytes);
+				if (percent != last_percent)
+				{
+					print_progress(written_bytes, total_bytes);
+					last_percent = percent;
+				}
+			}
 			remaining -= n;
 		}
 		close(src_fd);
 		fe = fe->next;
 	}
+
+	if (show_progress)
+		fprintf(stderr, "\n");
+
 	return 0;
 }
