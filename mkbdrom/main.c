@@ -34,6 +34,7 @@ struct progress_state
 static void print_phase_progress(struct udf_disc *disc, const char *label, uint64_t current, uint64_t total)
 {
 	struct progress_state *state = disc->progress_data;
+	uint64_t display_current = current;
 	int percent;
 	int filled;
 	int i;
@@ -41,10 +42,13 @@ static void print_phase_progress(struct udf_disc *disc, const char *label, uint6
 	if (!state || !state->enabled)
 		return;
 
+	if (total && display_current > total)
+		display_current = total;
+
 	if (total == 0)
 		percent = 100;
 	else
-		percent = (int)((current * 100) / total);
+		percent = (int)((display_current * 100) / total);
 
 	if (percent == state->last_percent && strcmp(state->last_label, label) == 0)
 		return;
@@ -56,14 +60,14 @@ static void print_phase_progress(struct udf_disc *disc, const char *label, uint6
 	fprintf(stderr, "\r%s: [", label);
 	for (i = 0; i < 20; i++)
 		fputc(i < filled ? '#' : '.', stderr);
-	fprintf(stderr, "] %3d%% (%"PRIu64"/%"PRIu64")", percent, current, total);
+	fprintf(stderr, "] %3d%% (%"PRIu64"/%"PRIu64")", percent, display_current, total);
 	fflush(stderr);
 
 	state->last_percent = percent;
 	strncpy(state->last_label, label, sizeof(state->last_label) - 1);
 	state->last_label[sizeof(state->last_label) - 1] = '\0';
 
-	if (current >= total)
+	if ((total == 0) || (display_current >= total))
 	{
 		fputc('\n', stderr);
 		state->last_percent = -1;
@@ -149,6 +153,7 @@ static uint32_t pack_source_tree(struct udf_disc *disc, struct udf_extent *pspac
 {
 	struct udf_desc *root_desc;
 	struct extendedFileEntry *root_efe;
+	uint32_t data_start;
 	uint32_t next_offset;
 
 	disc->metadata_start = 2;
@@ -169,8 +174,9 @@ static uint32_t pack_source_tree(struct udf_disc *disc, struct udf_extent *pspac
 	root_efe = (struct extendedFileEntry *)root_desc->data->buffer;
 	root_efe->descTag = query_tag(disc, pspace, root_desc, 1);
 	disc->metadata_blocks = compute_metadata_blocks(disc, pspace);
+	data_start = disc->metadata_start + disc->metadata_blocks;
 
-	return next_offset;
+	return layout_file_data(disc, pspace, data_start);
 }
 
 static int write_func(struct udf_disc *disc, struct udf_extent *ext)
@@ -269,7 +275,9 @@ static uint64_t scan_dir_size(const char *path)
 		if (entry->d_name[0] == '.')
 			continue;
 		snprintf(fullpath, sizeof(fullpath), "%s/%s", path, entry->d_name);
-		if (stat(fullpath, &st) != 0)
+		if (lstat(fullpath, &st) != 0)
+			continue;
+		if (S_ISLNK(st.st_mode))
 			continue;
 		if (S_ISDIR(st.st_mode))
 			total += scan_dir_size(fullpath);
@@ -326,7 +334,7 @@ int main(int argc, char *argv[])
 
 	{
 		struct stat st;
-		if (stat(source_dir, &st) != 0 || !S_ISDIR(st.st_mode))
+		if (lstat(source_dir, &st) != 0 || !S_ISDIR(st.st_mode))
 		{
 			fprintf(stderr, "%s: Error: Source '%s' is not a directory\n", appname, source_dir);
 			exit(1);
@@ -382,7 +390,16 @@ int main(int argc, char *argv[])
 
 	pspace = require_partition_space(&disc);
 	printf("Packing files from: %s\n", source_dir);
-	pack_source_tree(&disc, pspace, source_dir);
+	{
+		uint32_t final_required_blocks = pack_source_tree(&disc, pspace, source_dir) + 512;
+
+		if (final_required_blocks > disc.blocks)
+		{
+			fprintf(stderr, "%s: Error: Source content changed during image creation; rerun mkbdrom\n", appname);
+			close(fd);
+			exit(1);
+		}
+	}
 	disc.metadata_mirror_start = pspace->blocks - disc.metadata_blocks;
 	setup_metadata(&disc, pspace);
 	disc.progress = NULL;

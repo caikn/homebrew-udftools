@@ -21,6 +21,87 @@ extern const char *appname;
 struct file_entry *file_list_head = NULL;
 static struct file_entry *file_list_tail = NULL;
 
+struct dir_item {
+	char *name;
+};
+
+static int compare_dir_items(const void *left, const void *right)
+{
+	const struct dir_item *a = left;
+	const struct dir_item *b = right;
+
+	return strcmp(a->name, b->name);
+}
+
+static struct dir_item *read_sorted_directory(DIR *dir, size_t *count)
+{
+	struct dir_item *items = NULL;
+	struct dirent *entry;
+	size_t used = 0;
+	size_t capacity = 0;
+
+	*count = 0;
+
+	while ((entry = readdir(dir)) != NULL)
+	{
+		struct dir_item *grown;
+
+		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+			continue;
+		if (entry->d_name[0] == '.')
+			continue;
+
+		if (used == capacity)
+		{
+			size_t next_capacity = capacity ? capacity * 2 : 16;
+
+			grown = realloc(items, next_capacity * sizeof(*items));
+			if (!grown)
+			{
+				fprintf(stderr, "%s: Error: realloc failed: %s\n", appname, strerror(errno));
+				free(items);
+				return NULL;
+			}
+			items = grown;
+			capacity = next_capacity;
+		}
+
+		items[used].name = strdup(entry->d_name);
+		if (!items[used].name)
+		{
+			size_t i;
+
+			fprintf(stderr, "%s: Error: strdup failed: %s\n", appname, strerror(errno));
+			for (i = 0; i < used; i++)
+				free(items[i].name);
+			free(items);
+			return NULL;
+		}
+		used++;
+	}
+
+	qsort(items, used, sizeof(*items), compare_dir_items);
+	*count = used;
+	return items;
+}
+
+static void free_dir_items(struct dir_item *items, size_t count)
+{
+	size_t i;
+
+	for (i = 0; i < count; i++)
+		free(items[i].name);
+	free(items);
+}
+
+static uint32_t next_metadata_offset(struct udf_extent *pspace, uint32_t blocksize)
+{
+	if (!pspace->tail)
+		return 0;
+
+	return pspace->tail->offset + (uint32_t)((pspace->tail->length + blocksize - 1) / blocksize);
+}
+
 static uint64_t total_file_bytes(void)
 {
 	struct file_entry *entry = file_list_head;
@@ -74,7 +155,7 @@ void reset_file_entries(void)
 	file_list_tail = NULL;
 }
 
-static void add_file_entry(const char *path, uint32_t data_start, uint64_t size)
+static void add_file_entry(const char *path, struct udf_desc *desc, const struct stat *st)
 {
 	struct file_entry *fe = malloc(sizeof(struct file_entry));
 	if (!fe)
@@ -83,8 +164,11 @@ static void add_file_entry(const char *path, uint32_t data_start, uint64_t size)
 		exit(1);
 	}
 	fe->source_path = strdup(path);
-	fe->data_start = data_start;
-	fe->size = size;
+	fe->desc = desc;
+	fe->data_start = 0;
+	fe->size = st->st_size;
+	fe->device = st->st_dev;
+	fe->inode = st->st_ino;
 	fe->next = NULL;
 
 	if (file_list_tail)
@@ -100,16 +184,24 @@ static int pack_file(struct udf_disc *disc, struct udf_extent *pspace, const cha
 	struct udf_desc *file_desc;
 	struct extendedFileEntry *efe;
 	short_ad *sad;
-	uint32_t data_blocks, data_start;
 	const char *basename;
 	dstring encoded_name[256];
 	size_t name_len;
 
-	if (stat(filepath, &st) != 0)
+	if (lstat(filepath, &st) != 0)
 	{
 		fprintf(stderr, "%s: Error: Cannot stat '%s': %s\n", appname, filepath, strerror(errno));
 		return -1;
 	}
+
+	if (S_ISLNK(st.st_mode))
+	{
+		fprintf(stderr, "%s: Warning: Skipping symlink '%s'\n", appname, filepath);
+		return 0;
+	}
+
+	if (!S_ISREG(st.st_mode))
+		return 0;
 
 	basename = strrchr(filepath, '/');
 	basename = basename ? basename + 1 : filepath;
@@ -130,7 +222,7 @@ static int pack_file(struct udf_disc *disc, struct udf_extent *pspace, const cha
 		fprintf(stderr, "%s: Error: Cannot create file entry for '%s'\n", appname, basename);
 		return -1;
 	}
-	*next_offset = file_desc->offset + 1;
+	*next_offset = next_metadata_offset(pspace, disc->blocksize);
 
 	efe = (struct extendedFileEntry *)file_desc->data->buffer;
 
@@ -143,14 +235,10 @@ static int pack_file(struct udf_disc *disc, struct udf_extent *pspace, const cha
 		return 0;
 	}
 
-	data_blocks = (st.st_size + disc->blocksize - 1) / disc->blocksize;
-	data_start = *next_offset;
-	*next_offset = data_start + data_blocks;
-
 	efe->icbTag.flags = cpu_to_le16(ICBTAG_FLAG_AD_SHORT);
 	efe->informationLength = cpu_to_le64(st.st_size);
 	efe->objectSize = cpu_to_le64(st.st_size);
-	efe->logicalBlocksRecorded = cpu_to_le64(data_blocks);
+	efe->logicalBlocksRecorded = cpu_to_le64((st.st_size + disc->blocksize - 1) / disc->blocksize);
 	efe->lengthAllocDescs = cpu_to_le32(sizeof(short_ad));
 
 	size_t new_len = sizeof(struct extendedFileEntry) + sizeof(short_ad);
@@ -167,11 +255,11 @@ static int pack_file(struct udf_disc *disc, struct udf_extent *pspace, const cha
 	efe = (struct extendedFileEntry *)file_desc->data->buffer;
 	sad = (short_ad *)(efe->extendedAttrAndAllocDescs);
 	sad->extLength = cpu_to_le32((uint32_t)st.st_size);
-	sad->extPosition = cpu_to_le32(data_start);
+	sad->extPosition = cpu_to_le32(0);
 
 	efe->descTag = query_tag(disc, pspace, file_desc, 1);
 
-	add_file_entry(filepath, data_start, st.st_size);
+	add_file_entry(filepath, file_desc, &st);
 
 	return 0;
 }
@@ -179,10 +267,12 @@ static int pack_file(struct udf_disc *disc, struct udf_extent *pspace, const cha
 int pack_directory(struct udf_disc *disc, struct udf_extent *pspace, const char *source_path, struct udf_desc *parent_desc, uint32_t *next_offset)
 {
 	DIR *dir;
-	struct dirent *entry;
+	struct dir_item *items;
 	char path[4096];
 	struct stat st;
 	struct udf_desc *dir_desc;
+	size_t count;
+	size_t index;
 
 	dir = opendir(source_path);
 	if (!dir)
@@ -191,43 +281,53 @@ int pack_directory(struct udf_disc *disc, struct udf_extent *pspace, const char 
 		return -1;
 	}
 
-	while ((entry = readdir(dir)) != NULL)
+	items = read_sorted_directory(dir, &count);
+	closedir(dir);
+	if (!items && count == 0)
+		return -1;
+
+	for (index = 0; index < count; index++)
 	{
-		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+		if (snprintf(path, sizeof(path), "%s/%s", source_path, items[index].name) >= (int)sizeof(path))
+		{
+			fprintf(stderr, "%s: Warning: Path too long, skipping '%s/%s'\n", appname, source_path, items[index].name);
 			continue;
-		if (entry->d_name[0] == '.')
-			continue;
+		}
 
-		snprintf(path, sizeof(path), "%s/%s", source_path, entry->d_name);
-
-		if (stat(path, &st) != 0)
+		if (lstat(path, &st) != 0)
 		{
 			fprintf(stderr, "%s: Warning: Cannot stat '%s': %s, skipping\n", appname, path, strerror(errno));
+			continue;
+		}
+
+		if (S_ISLNK(st.st_mode))
+		{
+			fprintf(stderr, "%s: Warning: Skipping symlink '%s'\n", appname, path);
 			continue;
 		}
 
 		if (S_ISDIR(st.st_mode))
 		{
 			dstring encoded_name[256];
-			size_t name_len = strlen(entry->d_name);
+			size_t name_len = strlen(items[index].name);
 			if (name_len > 254)
 				name_len = 254;
 			encoded_name[0] = 8;
-			memcpy(encoded_name + 1, entry->d_name, name_len);
+			memcpy(encoded_name + 1, items[index].name, name_len);
 			name_len += 1;
 
 			dir_desc = udf_mkdir(disc, pspace, encoded_name, name_len, *next_offset, parent_desc);
 			if (!dir_desc)
 			{
-				fprintf(stderr, "%s: Error: Cannot create directory '%s'\n", appname, entry->d_name);
-				closedir(dir);
+				fprintf(stderr, "%s: Error: Cannot create directory '%s'\n", appname, items[index].name);
+				free_dir_items(items, count);
 				return -1;
 			}
-			*next_offset = dir_desc->offset + 1;
+			*next_offset = next_metadata_offset(pspace, disc->blocksize);
 
 			if (pack_directory(disc, pspace, path, dir_desc, next_offset) < 0)
 			{
-				closedir(dir);
+				free_dir_items(items, count);
 				return -1;
 			}
 
@@ -238,14 +338,44 @@ int pack_directory(struct udf_disc *disc, struct udf_extent *pspace, const char 
 		{
 			if (pack_file(disc, pspace, path, parent_desc, next_offset) < 0)
 			{
-				closedir(dir);
+				free_dir_items(items, count);
 				return -1;
 			}
 		}
 	}
 
-	closedir(dir);
+	free_dir_items(items, count);
 	return 0;
+}
+
+uint32_t layout_file_data(struct udf_disc *disc, struct udf_extent *pspace, uint32_t start_offset)
+{
+	struct file_entry *entry = file_list_head;
+	uint32_t next_offset = start_offset;
+
+	while (entry)
+	{
+		struct extendedFileEntry *efe;
+		short_ad *sad;
+		uint32_t data_blocks;
+
+		if (entry->size == 0)
+		{
+			entry = entry->next;
+			continue;
+		}
+
+		data_blocks = (uint32_t)((entry->size + disc->blocksize - 1) / disc->blocksize);
+		entry->data_start = next_offset;
+		efe = (struct extendedFileEntry *)entry->desc->data->buffer;
+		sad = (short_ad *)(efe->extendedAttrAndAllocDescs);
+		sad->extPosition = cpu_to_le32(entry->data_start);
+		efe->descTag = query_tag(disc, pspace, entry->desc, 1);
+		next_offset += data_blocks;
+		entry = entry->next;
+	}
+
+	return next_offset;
 }
 
 int write_file_data(int fd, struct udf_disc *disc, struct udf_extent *pspace)
@@ -264,10 +394,25 @@ int write_file_data(int fd, struct udf_disc *disc, struct udf_extent *pspace)
 	while (fe)
 	{
 		off_t offset = (off_t)(pspace_start + fe->data_start) * disc->blocksize;
-		int src_fd = open(fe->source_path, O_RDONLY);
+		int src_fd = open(fe->source_path, O_RDONLY | O_NOFOLLOW);
+		struct stat current;
 		if (src_fd < 0)
 		{
 			fprintf(stderr, "%s: Error: Cannot open '%s': %s\n", appname, fe->source_path, strerror(errno));
+			return -1;
+		}
+
+		if (fstat(src_fd, &current) != 0)
+		{
+			fprintf(stderr, "%s: Error: Cannot stat '%s': %s\n", appname, fe->source_path, strerror(errno));
+			close(src_fd);
+			return -1;
+		}
+
+		if (!S_ISREG(current.st_mode) || current.st_dev != fe->device || current.st_ino != fe->inode || (uint64_t)current.st_size != fe->size)
+		{
+			fprintf(stderr, "%s: Error: Source file '%s' changed during image creation\n", appname, fe->source_path);
+			close(src_fd);
 			return -1;
 		}
 
