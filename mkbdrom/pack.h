@@ -17,6 +17,7 @@ struct file_entry {
 
 extern struct file_entry *file_list_head;
 
+void set_pack_progress(struct udf_disc *disc, const char *label, uint64_t total);
 int pack_directory(struct udf_disc *disc, struct udf_extent *pspace, const char *source_path, struct udf_desc *parent_desc, uint32_t *next_offset);
 uint32_t layout_file_data(struct udf_disc *disc, struct udf_extent *pspace, uint32_t start_offset);
 void reset_file_entries(void);

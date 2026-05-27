@@ -31,6 +31,12 @@ struct progress_state
 	char last_label[64];
 };
 
+struct source_stats
+{
+	uint64_t bytes;
+	uint64_t entries;
+};
+
 static void print_phase_progress(struct udf_disc *disc, const char *label, uint64_t current, uint64_t total)
 {
 	struct progress_state *state = disc->progress_data;
@@ -256,17 +262,16 @@ static void usage(void)
 	exit(1);
 }
 
-static uint64_t scan_dir_size(const char *path)
+static void scan_source_stats(const char *path, struct source_stats *stats)
 {
 	DIR *dir;
 	struct dirent *entry;
 	struct stat st;
 	char fullpath[4096];
-	uint64_t total = 0;
 
 	dir = opendir(path);
 	if (!dir)
-		return 0;
+		return;
 
 	while ((entry = readdir(dir)) != NULL)
 	{
@@ -280,12 +285,17 @@ static uint64_t scan_dir_size(const char *path)
 		if (S_ISLNK(st.st_mode))
 			continue;
 		if (S_ISDIR(st.st_mode))
-			total += scan_dir_size(fullpath);
+		{
+			stats->entries++;
+			scan_source_stats(fullpath, stats);
+		}
 		else if (S_ISREG(st.st_mode))
-			total += st.st_size;
+		{
+			stats->bytes += st.st_size;
+			stats->entries++;
+		}
 	}
 	closedir(dir);
-	return total;
 }
 
 int main(int argc, char *argv[])
@@ -302,7 +312,7 @@ int main(int argc, char *argv[])
 	uint32_t blocksize = 2048;
 	uint32_t estimated_blocks;
 	uint32_t required_blocks;
-	uint64_t src_bytes;
+	struct source_stats source_stats = { 0, 0 };
 	int fd;
 	int i;
 
@@ -341,14 +351,20 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	src_bytes = scan_dir_size(source_dir);
-	estimated_blocks = (uint32_t)((src_bytes + blocksize - 1) / blocksize) + 2048;
-	printf("Source size: %"PRIu64" bytes (%"PRIu32" estimated blocks)\n", src_bytes, estimated_blocks);
+	scan_source_stats(source_dir, &source_stats);
+	estimated_blocks = (uint32_t)((source_stats.bytes + blocksize - 1) / blocksize) + 2048;
+	printf("Source size: %"PRIu64" bytes (%"PRIu32" estimated blocks)\n", source_stats.bytes, estimated_blocks);
+	printf("Source entries: %"PRIu64"\n", source_stats.entries);
 
 	init_bdrom_disc(&plan_disc, blocksize, disc_capacity ? disc_capacity : estimated_blocks, label);
+	plan_disc.progress = print_phase_progress;
+	plan_disc.progress_data = &progress;
+	progress.enabled = isatty(STDERR_FILENO);
 	split_space(&plan_disc);
 	plan_pspace = require_partition_space(&plan_disc);
+	set_pack_progress(&plan_disc, "Planning layout", source_stats.entries);
 	required_blocks = pack_source_tree(&plan_disc, plan_pspace, source_dir) + 512;
+	set_pack_progress(NULL, NULL, 0);
 	reset_file_entries();
 
 	if (disc_capacity)
@@ -390,6 +406,7 @@ int main(int argc, char *argv[])
 
 	pspace = require_partition_space(&disc);
 	printf("Packing files from: %s\n", source_dir);
+	set_pack_progress(&disc, "Packing entries", source_stats.entries);
 	{
 		uint32_t final_required_blocks = pack_source_tree(&disc, pspace, source_dir) + 512;
 
@@ -400,6 +417,7 @@ int main(int argc, char *argv[])
 			exit(1);
 		}
 	}
+	set_pack_progress(NULL, NULL, 0);
 	disc.metadata_mirror_start = pspace->blocks - disc.metadata_blocks;
 	setup_metadata(&disc, pspace);
 	disc.progress = NULL;

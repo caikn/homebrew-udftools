@@ -20,6 +20,10 @@ extern const char *appname;
 
 struct file_entry *file_list_head = NULL;
 static struct file_entry *file_list_tail = NULL;
+static struct udf_disc *pack_progress_disc = NULL;
+static const char *pack_progress_label = NULL;
+static uint64_t pack_progress_total = 0;
+static uint64_t pack_progress_current = 0;
 
 struct dir_item {
 	char *name;
@@ -59,6 +63,7 @@ static struct dir_item *read_sorted_directory(DIR *dir, size_t *count)
 			if (!grown)
 			{
 				fprintf(stderr, "%s: Error: realloc failed: %s\n", appname, strerror(errno));
+				*count = SIZE_MAX;
 				free(items);
 				return NULL;
 			}
@@ -72,6 +77,7 @@ static struct dir_item *read_sorted_directory(DIR *dir, size_t *count)
 			size_t i;
 
 			fprintf(stderr, "%s: Error: strdup failed: %s\n", appname, strerror(errno));
+			*count = SIZE_MAX;
 			for (i = 0; i < used; i++)
 				free(items[i].name);
 			free(items);
@@ -136,6 +142,26 @@ static void print_progress(uint64_t written, uint64_t total)
 		fputc(i < filled ? '#' : '.', stderr);
 	fprintf(stderr, "] %3d%% (%"PRIu64"/%"PRIu64" bytes)", percent, written, total);
 	fflush(stderr);
+}
+
+void set_pack_progress(struct udf_disc *disc, const char *label, uint64_t total)
+{
+	pack_progress_disc = disc;
+	pack_progress_label = label;
+	pack_progress_total = total;
+	pack_progress_current = 0;
+
+	if (pack_progress_disc && pack_progress_disc->progress && pack_progress_total == 0)
+		pack_progress_disc->progress(pack_progress_disc, pack_progress_label, 0, 0);
+}
+
+static void advance_pack_progress(void)
+{
+	if (!pack_progress_disc || !pack_progress_disc->progress || !pack_progress_label || pack_progress_total == 0)
+		return;
+
+	pack_progress_current++;
+	pack_progress_disc->progress(pack_progress_disc, pack_progress_label, pack_progress_current, pack_progress_total);
 }
 
 void reset_file_entries(void)
@@ -260,6 +286,7 @@ static int pack_file(struct udf_disc *disc, struct udf_extent *pspace, const cha
 	efe->descTag = query_tag(disc, pspace, file_desc, 1);
 
 	add_file_entry(filepath, file_desc, &st);
+	advance_pack_progress();
 
 	return 0;
 }
@@ -283,7 +310,7 @@ int pack_directory(struct udf_disc *disc, struct udf_extent *pspace, const char 
 
 	items = read_sorted_directory(dir, &count);
 	closedir(dir);
-	if (!items && count == 0)
+	if (!items && count == SIZE_MAX)
 		return -1;
 
 	for (index = 0; index < count; index++)
@@ -324,6 +351,7 @@ int pack_directory(struct udf_disc *disc, struct udf_extent *pspace, const char 
 				return -1;
 			}
 			*next_offset = next_metadata_offset(pspace, disc->blocksize);
+			advance_pack_progress();
 
 			if (pack_directory(disc, pspace, path, dir_desc, next_offset) < 0)
 			{
