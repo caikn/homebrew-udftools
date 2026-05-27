@@ -6,7 +6,8 @@ A macOS port of [udftools](https://github.com/pali/udftools) (v2.3) — the Linu
 
 | Tool | Description |
 |------|-------------|
-| `mkudffs` | Create UDF filesystem images |
+| `mkbdrom` | Create UDF 2.50 BD-ROM images directly from a source directory (PS4/PS5 compatible) |
+| `mkudffs` | Create UDF filesystem images (general purpose) |
 | `udfinfo` | Display UDF filesystem information |
 | `udflabel` | Show or change UDF filesystem label/UUID |
 
@@ -50,13 +51,38 @@ make
 sudo make install
 ```
 
-This installs `mkudffs`, `udfinfo`, and `udflabel` to `/usr/local/bin/`. To customize the prefix:
+This installs `mkbdrom`, `mkudffs`, `udfinfo`, and `udflabel` to `/usr/local/bin/`. To customize the prefix:
 
 ```bash
 make install PREFIX=/opt/udftools
 ```
 
 ## Usage
+
+### mkbdrom — Create BD-ROM Image from Directory
+
+Creates a UDF 2.50 BD-ROM ISO directly from a source directory. No mounting required — files are packed directly into the image. This is the recommended tool for creating PS4/PS5 compatible Blu-ray disc images on macOS.
+
+```bash
+# Create BD-ROM image from source directory
+mkbdrom --source /path/to/content --label "BLURAY" --disc-capacity 12219392 output.iso
+
+# Source directory should contain standard BD-ROM structure:
+# content/
+# ├── BDMV/
+# │   ├── index.bdmv
+# │   ├── MovieObject.bdmv
+# │   ├── STREAM/*.m2ts
+# │   ├── CLIPINF/*.clpi
+# │   └── PLAYLIST/*.mpls
+# └── CERTIFICATE/
+```
+
+Options:
+- `--source <dir>` — Source directory containing BDMV/CERTIFICATE structure
+- `--label <name>` — Volume label (default: BLURAY)
+- `--disc-capacity <blocks>` — Target BD-R capacity in blocks (12219392 for 25GB BD-R)
+- `--blocksize <n>` — Block size in bytes (default: 2048)
 
 ### mkudffs — Create UDF Filesystem
 
@@ -125,7 +151,8 @@ udflabel --lvid="My Volume" --vid="MYVOL" --uuid=random image.iso
 ```
 include/        Shared headers (ecma_167.h, osta_udf.h, libudffs.h, bswap.h, config.h)
 libudffs/       Shared library source (crc, extent, unicode, misc)
-mkudffs/        mkudffs tool source
+mkbdrom/        mkbdrom tool source (BD-ROM image creator)
+mkudffs/        mkudffs tool source (general UDF formatter)
 udfinfo/        udfinfo tool source
 udflabel/       udflabel tool source
 ```
@@ -135,21 +162,22 @@ Mirrors the [upstream udftools](https://github.com/pali/udftools) layout.
 ## BD-ROM Workflow (PS4/PS5 Compatible)
 
 ```bash
-# 1. Create UDF 2.50 image
-mkudffs --new-file --udfrev=2.50 --blocksize=2048 --label="BLURAY" disc.iso 10000000
+# 1. Create BD-ROM image directly from source content
+mkbdrom --source /path/to/content --label "BLURAY" --disc-capacity 12219392 disc.iso
 
-# 2. Mount and populate
-hdiutil attach -nobrowse disc.iso
-cp -R /path/to/BDMV /Volumes/BLURAY/
-cp -R /path/to/CERTIFICATE /Volumes/BLURAY/
-hdiutil detach /dev/diskN
-
-# 3. Verify
+# 2. Verify
 udfinfo disc.iso
 
-# 4. Burn
+# 3. Test with VLC
+open -a VLC "bluray:///path/to/disc.iso"
+
+# 4. Burn to BD-R
 hdiutil burn disc.iso
 ```
+
+Common disc capacities (in 2048-byte blocks):
+- BD-R SL (25 GB): `--disc-capacity 12219392`
+- BD-R DL (50 GB): `--disc-capacity 24438784`
 
 ## License
 
