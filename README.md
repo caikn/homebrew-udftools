@@ -57,6 +57,18 @@ This installs `mkbdrom`, `mkudffs`, `udfinfo`, and `udflabel` to `/usr/local/bin
 make install PREFIX=/opt/udftools
 ```
 
+### Regression Check
+
+Run the mkbdrom regression script to verify anchor placement and metadata sizing:
+
+```bash
+./scripts/test_mkbdrom_regression.sh
+```
+
+This tests that:
+- The final block count matches the physical file size (no stale anchors from a post-layout resize)
+- Metadata partition size is credible for the number of files packed (not frozen before packing)
+
 ## Usage
 
 ### mkbdrom — Create BD-ROM Image from Directory

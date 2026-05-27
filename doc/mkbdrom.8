@@ -1,0 +1,106 @@
+'\" t -*- coding: UTF-8 -*-
+.\" Copyright (C) 2026
+.\"
+.\" This program is free software; you can redistribute it and/or modify
+.\" it under the terms of the GNU General Public License as published by
+.\" the Free Software Foundation; either version 2 of the License, or
+.\" (at your option) any later version.
+.\"
+.\" This manual is distributed in the hope that it will be useful,
+.\" but WITHOUT ANY WARRANTY; without even the implied warranty of
+.\" MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+.\" GNU General Public License for more details.
+.\"
+.\" You should have received a copy of the GNU General Public License along
+.\" with this program; if not, write to the Free Software Foundation, Inc.,
+.\" 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
+.\"
+.TH MKBDROM 8 "udftools" "System Management Commands"
+
+.SH NAME
+mkbdrom \(em create UDF 2.50 BD-ROM images from a source directory
+
+.SH SYNOPSIS
+.BI "mkbdrom --source " directory " [--label " label "] [--disc-capacity " blocks "] [--blocksize " bytes "] " output.iso
+
+.SH DESCRIPTION
+.B mkbdrom
+creates a UDF 2.50 image with a Metadata Partition suitable for BD-ROM style
+layouts directly from a source directory. The source tree is packed into the
+image without mounting an intermediate filesystem.
+
+The tool is intended for authoring Blu-ray compatible images on macOS,
+including PS4 and PS5 workflows that require UDF 2.50 metadata partition
+layout. The source directory typically contains a
+.I BDMV
+directory and an optional
+.I CERTIFICATE
+directory.
+
+.SH OPTIONS
+.TP
+.BI "--source " directory
+Path to the source directory whose contents will be packed into the output
+image. Hidden files and directories are skipped.
+
+.TP
+.BI "--label " label
+Set both the logical volume identifier and volume identifier for the image.
+If omitted, the default label is
+.IR BLURAY .
+
+.TP
+.BI "--disc-capacity " blocks
+Set the target image size in logical blocks. The value must be large enough to
+hold both the packed file data and the UDF metadata structures. If omitted,
+.B mkbdrom
+automatically chooses the minimum required size.
+
+.TP
+.BI "--blocksize " bytes
+Set the logical block size in bytes. The default is
+.IR 2048 .
+
+.TP
+.B -h, --help
+Display usage information.
+
+.SH EXAMPLES
+.TP
+Create a minimum-size BD-ROM image from a prepared content tree:
+.RS
+.B mkbdrom --source /path/to/content output.iso
+.RE
+
+.TP
+Create a 25 GB single-layer BD-R sized image with an explicit label:
+.RS
+.B mkbdrom --source /path/to/content --label BLURAY --disc-capacity 12219392 output.iso
+.RE
+
+.SH NOTES
+The generated image uses UDF revision 2.50 with a Type 2 Metadata Partition
+Map. This is the layout expected by read-only BD-ROM style consumers.
+
+Common Blu-ray capacities in 2048-byte blocks:
+.RS
+.TP
+12219392
+25 GB BD-R single layer
+.TP
+24438784
+50 GB BD-R dual layer
+.RE
+
+.SH FILES
+.TP
+.I BDMV/
+Blu-ray disc content tree.
+.TP
+.I CERTIFICATE/
+Optional Blu-ray certificate tree.
+
+.SH SEE ALSO
+.BR mkudffs (8),
+.BR udfinfo (1),
+.BR udflabel (8)

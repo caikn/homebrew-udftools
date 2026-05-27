@@ -24,12 +24,114 @@
 
 const char *appname;
 
+static void init_bdrom_disc(struct udf_disc *disc, uint32_t blocksize, uint32_t blocks, const char *label)
+{
+	int i;
+
+	udf_init_disc(disc);
+
+	disc->blocksize = blocksize;
+	disc->blocks = blocks;
+	disc->head->blocks = blocks;
+	disc->udf_lvd[0]->logicalBlockSize = cpu_to_le32(blocksize);
+	udf_set_version(disc, 0x0250);
+
+	disc->flags |= FLAG_EFE | FLAG_METADATA | FLAG_BOOTAREA_ERASE;
+	disc->flags &= ~FLAG_SPACE;
+
+	for (i = 0; i < UDF_ALLOC_TYPE_SIZE; i++)
+		disc->sizing[i] = default_sizing[default_media[MEDIA_TYPE_HD]][i];
+
+	encode_string(disc, disc->udf_lvd[0]->logicalVolIdent, label, 128);
+	encode_string(disc, disc->udf_pvd[0]->volIdent, label, 32);
+
+	add_type1_partition(disc, 0);
+	add_type2_metadata_partition(disc, 0);
+}
+
+static struct udf_extent *require_partition_space(struct udf_disc *disc)
+{
+	struct udf_extent *pspace = next_extent(disc->head, PSPACE);
+
+	if (!pspace)
+	{
+		fprintf(stderr, "%s: Error: No partition space available\n", appname);
+		exit(1);
+	}
+
+	return pspace;
+}
+
+static struct udf_desc *find_root_desc(struct udf_extent *pspace)
+{
+	struct udf_desc *desc = pspace->head;
+
+	while (desc)
+	{
+		if (desc->ident == TAG_IDENT_EFE || desc->ident == TAG_IDENT_FE)
+		{
+			struct extendedFileEntry *efe = (struct extendedFileEntry *)desc->data->buffer;
+
+			if (efe->icbTag.fileType == ICBTAG_FILE_TYPE_DIRECTORY)
+				return desc;
+		}
+		desc = desc->next;
+	}
+
+	return NULL;
+}
+
+static uint32_t compute_metadata_blocks(struct udf_disc *disc, struct udf_extent *pspace)
+{
+	uint32_t last_offset = 0;
+	struct udf_desc *desc = pspace->head;
+
+	while (desc)
+	{
+		uint32_t end = desc->offset + (desc->length + disc->blocksize - 1) / disc->blocksize;
+
+		if (end > last_offset)
+			last_offset = end;
+		desc = desc->next;
+	}
+
+	return last_offset - disc->metadata_start;
+}
+
+static uint32_t pack_source_tree(struct udf_disc *disc, struct udf_extent *pspace, const char *source_dir)
+{
+	struct udf_desc *root_desc;
+	struct extendedFileEntry *root_efe;
+	uint32_t next_offset;
+
+	disc->metadata_start = 2;
+	setup_fileset(disc, pspace);
+	setup_root(disc, pspace);
+
+	root_desc = find_root_desc(pspace);
+	if (!root_desc)
+	{
+		fprintf(stderr, "%s: Error: Cannot find root directory\n", appname);
+		exit(1);
+	}
+
+	next_offset = root_desc->offset + 1;
+	if (pack_directory(disc, pspace, source_dir, root_desc, &next_offset) < 0)
+		exit(1);
+
+	root_efe = (struct extendedFileEntry *)root_desc->data->buffer;
+	root_efe->descTag = query_tag(disc, pspace, root_desc, 1);
+	disc->metadata_blocks = compute_metadata_blocks(disc, pspace);
+
+	return next_offset;
+}
+
 static int write_func(struct udf_disc *disc, struct udf_extent *ext)
 {
 	static char *buffer = NULL;
 	static size_t bufferlen = 0;
 	int fd = *(int *)disc->write_data;
-	ssize_t length, offset;
+	ssize_t length;
 	struct udf_desc *desc;
 	struct udf_data *data;
 
@@ -54,7 +156,6 @@ static int write_func(struct udf_disc *disc, struct udf_extent *ext)
 		}
 
 		data = desc->data;
-		offset = 0;
 		while (data != NULL)
 		{
 			uint64_t remaining = data->length;
@@ -134,14 +235,18 @@ static uint64_t scan_dir_size(const char *path)
 
 int main(int argc, char *argv[])
 {
+	struct udf_disc plan_disc;
 	struct udf_disc disc;
+	struct udf_extent *plan_pspace;
 	struct udf_extent *pspace;
 	char *source_dir = NULL;
 	char *output_file = NULL;
 	char *label = "BLURAY";
 	uint32_t disc_capacity = 0;
 	uint32_t blocksize = 2048;
-	uint32_t content_blocks;
+	uint32_t estimated_blocks;
+	uint32_t required_blocks;
+	uint64_t src_bytes;
 	int fd;
 	int i;
 
@@ -180,36 +285,27 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	udf_init_disc(&disc);
+	src_bytes = scan_dir_size(source_dir);
+	estimated_blocks = (uint32_t)((src_bytes + blocksize - 1) / blocksize) + 2048;
+	printf("Source size: %"PRIu64" bytes (%"PRIu32" estimated blocks)\n", src_bytes, estimated_blocks);
 
-	disc.blocksize = blocksize;
-	disc.udf_lvd[0]->logicalBlockSize = cpu_to_le32(blocksize);
-	udf_set_version(&disc, 0x0250);
+	init_bdrom_disc(&plan_disc, blocksize, disc_capacity ? disc_capacity : estimated_blocks, label);
+	split_space(&plan_disc);
+	plan_pspace = require_partition_space(&plan_disc);
+	required_blocks = pack_source_tree(&plan_disc, plan_pspace, source_dir) + 512;
+	reset_file_entries();
 
-	disc.flags |= FLAG_EFE | FLAG_METADATA | FLAG_BOOTAREA_ERASE;
-	disc.flags &= ~FLAG_SPACE;
-
-	for (i = 0; i < UDF_ALLOC_TYPE_SIZE; i++)
-		disc.sizing[i] = default_sizing[default_media[MEDIA_TYPE_HD]][i];
-
-	encode_string(&disc, disc.udf_lvd[0]->logicalVolIdent, label, 128);
-	encode_string(&disc, disc.udf_pvd[0]->volIdent, label, 32);
-
-	add_type1_partition(&disc, 0);
-	add_type2_metadata_partition(&disc, 0);
-
+	if (disc_capacity)
 	{
-		uint64_t src_bytes = scan_dir_size(source_dir);
-		content_blocks = (src_bytes / blocksize) + 2048;
-		printf("Source size: %llu bytes (%"PRIu32" blocks + overhead)\n", src_bytes, content_blocks);
+		if (disc_capacity < required_blocks)
+		{
+			fprintf(stderr, "%s: Error: --disc-capacity (%"PRIu32") is smaller than needed content blocks (%"PRIu32")\n", appname, disc_capacity, required_blocks);
+			exit(1);
+		}
+		required_blocks = disc_capacity;
 	}
 
-	if (disc_capacity && disc_capacity > content_blocks)
-		disc.blocks = disc_capacity;
-	else
-		disc.blocks = content_blocks;
-
-	disc.head->blocks = disc.blocks;
+	init_bdrom_disc(&disc, blocksize, required_blocks, label);
 
 	fd = open(output_file, O_RDWR | O_CREAT | O_TRUNC, 0644);
 	if (fd < 0)
@@ -230,101 +326,14 @@ int main(int argc, char *argv[])
 
 	split_space(&disc);
 	setup_vrs(&disc);
-	setup_anchor(&disc);
-	setup_vds(&disc);
 	setup_lvid(&disc, next_extent(disc.head, LVID));
-
-	pspace = next_extent(disc.head, PSPACE);
-	if (!pspace)
-	{
-		fprintf(stderr, "%s: Error: No partition space available\n", appname);
-		close(fd);
-		exit(1);
-	}
-
-	disc.metadata_start = 2;
-	setup_fileset(&disc, pspace);
-	setup_root(&disc, pspace);
-
-	{
-		struct udf_desc *root_desc = NULL;
-		struct udf_desc *d = pspace->head;
-		while (d)
-		{
-			if (d->ident == TAG_IDENT_EFE || d->ident == TAG_IDENT_FE)
-			{
-				struct extendedFileEntry *efe = (struct extendedFileEntry *)d->data->buffer;
-				if (efe->icbTag.fileType == ICBTAG_FILE_TYPE_DIRECTORY)
-				{
-					root_desc = d;
-					break;
-				}
-			}
-			d = d->next;
-		}
-
-		if (!root_desc)
-		{
-			fprintf(stderr, "%s: Error: Cannot find root directory\n", appname);
-			close(fd);
-			exit(1);
-		}
-
-		uint32_t next_offset = root_desc->offset + 1;
-
-		/* Calculate metadata_blocks BEFORE packing files (metadata = FSD + root dir only) */
-		{
-			uint32_t last_offset = 0;
-			d = pspace->head;
-			while (d)
-			{
-				uint32_t end = d->offset + (d->length + disc.blocksize - 1) / disc.blocksize;
-				if (end > last_offset)
-					last_offset = end;
-				d = d->next;
-			}
-			disc.metadata_blocks = last_offset - disc.metadata_start;
-		}
-
-		printf("Packing files from: %s\n", source_dir);
-		if (pack_directory(&disc, pspace, source_dir, root_desc, &next_offset) < 0)
-		{
-			close(fd);
-			exit(1);
-		}
-
-		struct extendedFileEntry *root_efe = (struct extendedFileEntry *)root_desc->data->buffer;
-		root_efe->descTag = query_tag(&disc, pspace, root_desc, 1);
-
-		content_blocks = next_offset + 512;
-		if (disc_capacity)
-		{
-			if (disc_capacity < content_blocks)
-			{
-				fprintf(stderr, "%s: Error: --disc-capacity (%"PRIu32") is smaller than needed content blocks (%"PRIu32")\n", appname, disc_capacity, content_blocks);
-				close(fd);
-				exit(1);
-			}
-			disc.blocks = disc_capacity;
-		}
-		else
-		{
-			disc.blocks = content_blocks;
-		}
-
-		disc.head->blocks = disc.blocks;
-		if (ftruncate(fd, (off_t)disc.blocks * disc.blocksize) != 0)
-		{
-			fprintf(stderr, "%s: Error: Cannot resize file: %s\n", appname, strerror(errno));
-			close(fd);
-			exit(1);
-		}
-
-		disc.metadata_mirror_start = pspace->blocks - disc.metadata_blocks;
-		setup_metadata(&disc, pspace);
-	}
-
 	setup_anchor(&disc);
+
+	pspace = require_partition_space(&disc);
+	printf("Packing files from: %s\n", source_dir);
+	pack_source_tree(&disc, pspace, source_dir);
+	disc.metadata_mirror_start = pspace->blocks - disc.metadata_blocks;
+	setup_metadata(&disc, pspace);
 	setup_vds(&disc);
 
 	printf("Writing image: %s\n", output_file);

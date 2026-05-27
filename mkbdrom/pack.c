@@ -21,6 +21,23 @@ extern const char *appname;
 struct file_entry *file_list_head = NULL;
 static struct file_entry *file_list_tail = NULL;
 
+void reset_file_entries(void)
+{
+	struct file_entry *entry = file_list_head;
+
+	while (entry)
+	{
+		struct file_entry *next = entry->next;
+
+		free(entry->source_path);
+		free(entry);
+		entry = next;
+	}
+
+	file_list_head = NULL;
+	file_list_tail = NULL;
+}
+
 static void add_file_entry(const char *path, uint32_t data_start, uint64_t size)
 {
 	struct file_entry *fe = malloc(sizeof(struct file_entry));
