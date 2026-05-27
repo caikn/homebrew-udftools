@@ -66,6 +66,8 @@
 #define FLAG_BOOTAREA_MBR		0x00040000
 #define FLAG_BOOTAREA_MASK		(FLAG_BOOTAREA_PRESERVE|FLAG_BOOTAREA_ERASE|FLAG_BOOTAREA_MBR)
 
+#define FLAG_BDROM			0x00080000
+
 struct udf_extent;
 struct udf_desc;
 struct udf_data;

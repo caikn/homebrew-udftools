@@ -93,7 +93,7 @@ static void init_bdrom_disc(struct udf_disc *disc, uint32_t blocksize, uint32_t 
 	disc->udf_lvd[0]->logicalBlockSize = cpu_to_le32(blocksize);
 	udf_set_version(disc, 0x0250);
 
-	disc->flags |= FLAG_EFE | FLAG_METADATA | FLAG_BOOTAREA_ERASE;
+	disc->flags |= FLAG_EFE | FLAG_METADATA | FLAG_BOOTAREA_ERASE | FLAG_BDROM;
 	disc->flags &= ~FLAG_SPACE;
 
 	for (i = 0; i < UDF_ALLOC_TYPE_SIZE; i++)
@@ -161,8 +161,10 @@ static uint32_t pack_source_tree(struct udf_disc *disc, struct udf_extent *pspac
 	struct extendedFileEntry *root_efe;
 	uint32_t data_start;
 	uint32_t next_offset;
+	uint32_t aligned_meta_blocks;
+	struct udf_desc *d;
 
-	disc->metadata_start = 2;
+	disc->metadata_start = 32;
 	setup_fileset(disc, pspace);
 	setup_root(disc, pspace);
 
@@ -180,68 +182,115 @@ static uint32_t pack_source_tree(struct udf_disc *disc, struct udf_extent *pspac
 	root_efe = (struct extendedFileEntry *)root_desc->data->buffer;
 	root_efe->descTag = query_tag(disc, pspace, root_desc, 1);
 	disc->metadata_blocks = compute_metadata_blocks(disc, pspace);
+
+	aligned_meta_blocks = ((disc->metadata_blocks + 31) / 32) * 32;
+	disc->metadata_blocks = aligned_meta_blocks;
 	data_start = disc->metadata_start + disc->metadata_blocks;
+
+	/* Recompute tags and fix directory short_ad positions to metadata-relative */
+	for (d = pspace->head; d; d = d->next)
+	{
+		if (d->offset >= disc->metadata_start && d->offset < disc->metadata_start + disc->metadata_blocks)
+		{
+			struct extendedFileEntry *efe = (struct extendedFileEntry *)d->data->buffer;
+			uint16_t dtag = le16_to_cpu(efe->descTag.tagIdent);
+
+			if (dtag == TAG_IDENT_EFE && efe->icbTag.fileType == ICBTAG_FILE_TYPE_DIRECTORY)
+			{
+				uint16_t flags = le16_to_cpu(efe->icbTag.flags);
+				if ((flags & ICBTAG_FLAG_AD_MASK) == ICBTAG_FLAG_AD_SHORT && le32_to_cpu(efe->lengthAllocDescs) >= sizeof(short_ad))
+				{
+					short_ad *sad = (short_ad *)&efe->extendedAttrAndAllocDescs[le32_to_cpu(efe->lengthExtendedAttr)];
+					uint32_t pos = le32_to_cpu(sad->extPosition);
+					if (pos >= disc->metadata_start)
+						sad->extPosition = cpu_to_le32(pos - disc->metadata_start);
+				}
+			}
+			*(tag *)d->data->buffer = query_tag(disc, pspace, d, 1);
+		}
+	}
 
 	return layout_file_data(disc, pspace, data_start);
 }
 
 static int write_func(struct udf_disc *disc, struct udf_extent *ext)
 {
-	static char *buffer = NULL;
-	static size_t bufferlen = 0;
 	int fd = *(int *)disc->write_data;
-	ssize_t length;
 	struct udf_desc *desc;
 	struct udf_data *data;
+	char *block_buf;
+	uint32_t block_pos;
 
-	if (buffer == NULL)
-	{
-		bufferlen = disc->blocksize;
-		buffer = calloc(bufferlen, 1);
-		if (buffer == NULL)
-			return -1;
-	}
+	block_buf = calloc(1, disc->blocksize);
+	if (!block_buf)
+		return -1;
 
 	if (ext->space_type == USPACE || ext->space_type == RESERVED)
+	{
+		free(block_buf);
 		return 0;
+	}
 
 	desc = ext->head;
 	while (desc != NULL)
 	{
-		if (lseek(fd, (off_t)(ext->start + desc->offset) * disc->blocksize, SEEK_SET) < 0)
+		off_t base_offset = (off_t)(ext->start + desc->offset) * disc->blocksize;
+
+		if (lseek(fd, base_offset, SEEK_SET) < 0)
 		{
 			fprintf(stderr, "%s: Error: lseek failed: %s\n", appname, strerror(errno));
+			free(block_buf);
 			return -1;
 		}
+
+		block_pos = 0;
+		memset(block_buf, 0, disc->blocksize);
 
 		data = desc->data;
 		while (data != NULL)
 		{
-			uint64_t remaining = data->length;
 			uint8_t *src = (uint8_t *)data->buffer;
+			uint64_t remaining = data->length;
 
 			while (remaining > 0)
 			{
-				size_t chunk = remaining > bufferlen ? bufferlen : remaining;
-				memcpy(buffer, src, chunk);
-				if (chunk < bufferlen)
-					memset(buffer + chunk, 0, bufferlen - chunk);
+				size_t space = disc->blocksize - block_pos;
+				size_t copy = remaining < space ? remaining : space;
 
-				length = (chunk + disc->blocksize - 1) & ~(disc->blocksize - 1);
-				if (write_nointr(fd, buffer, length) != length)
+				memcpy(block_buf + block_pos, src, copy);
+				block_pos += copy;
+				src += copy;
+				remaining -= copy;
+
+				if (block_pos == disc->blocksize)
 				{
-					fprintf(stderr, "%s: Error: write failed: %s\n", appname, strerror(errno));
-					return -1;
+					if (write_nointr(fd, block_buf, disc->blocksize) != (ssize_t)disc->blocksize)
+					{
+						fprintf(stderr, "%s: Error: write failed: %s\n", appname, strerror(errno));
+						free(block_buf);
+						return -1;
+					}
+					block_pos = 0;
+					memset(block_buf, 0, disc->blocksize);
 				}
-
-				src += chunk;
-				remaining -= chunk;
 			}
 			data = data->next;
 		}
 
+		if (block_pos > 0)
+		{
+			if (write_nointr(fd, block_buf, disc->blocksize) != (ssize_t)disc->blocksize)
+			{
+				fprintf(stderr, "%s: Error: write failed: %s\n", appname, strerror(errno));
+				free(block_buf);
+				return -1;
+			}
+		}
+
 		desc = desc->next;
 	}
+
+	free(block_buf);
 	return 0;
 }
 
@@ -363,8 +412,15 @@ int main(int argc, char *argv[])
 	split_space(&plan_disc);
 	plan_pspace = require_partition_space(&plan_disc);
 	set_pack_progress(&plan_disc, "Planning layout", source_stats.entries);
-	required_blocks = pack_source_tree(&plan_disc, plan_pspace, source_dir) + 512;
+	required_blocks = pack_source_tree(&plan_disc, plan_pspace, source_dir);
 	set_pack_progress(NULL, NULL, 0);
+
+	/* Convert pspace-relative end to total disc blocks:
+	 * add mirror region + non-pspace overhead (VRS, MVDS, RVDS, anchors, LVID) */
+	{
+		uint32_t non_pspace_overhead = plan_pspace->start + (plan_disc.blocks - plan_pspace->start - plan_pspace->blocks);
+		required_blocks += plan_disc.metadata_blocks + 1 + non_pspace_overhead + 32;
+	}
 	reset_file_entries();
 
 	if (disc_capacity)
@@ -408,20 +464,49 @@ int main(int argc, char *argv[])
 	printf("Packing files from: %s\n", source_dir);
 	set_pack_progress(&disc, "Packing entries", source_stats.entries);
 	{
-		uint32_t final_required_blocks = pack_source_tree(&disc, pspace, source_dir) + 512;
+		uint32_t file_data_end;
+		uint32_t mirror_efe_offset;
 
-		if (final_required_blocks > disc.blocks)
+		file_data_end = pack_source_tree(&disc, pspace, source_dir);
+
+		/* Place mirror EFE and content at end of partition, after file data */
+		mirror_efe_offset = pspace->blocks - disc.metadata_blocks - 1;
+		if (file_data_end > mirror_efe_offset)
 		{
 			fprintf(stderr, "%s: Error: Source content changed during image creation; rerun mkbdrom\n", appname);
 			close(fd);
 			exit(1);
 		}
+		disc.metadata_mirror_start = mirror_efe_offset + 1;
 	}
 	set_pack_progress(NULL, NULL, 0);
-	disc.metadata_mirror_start = pspace->blocks - disc.metadata_blocks;
 	setup_metadata(&disc, pspace);
 	disc.progress = NULL;
 	disc.progress_data = NULL;
+
+	/* Fix LVID: partition 0 free=0, partition 1 free=0/size=metadata_blocks */
+	{
+		uint32_t *freeSpace = (uint32_t *)&disc.udf_lvid->data[0];
+		uint32_t *sizeTable = (uint32_t *)&disc.udf_lvid->data[sizeof(uint32_t) * le32_to_cpu(disc.udf_lvid->numOfPartitions)];
+		freeSpace[0] = cpu_to_le32(0);
+		freeSpace[1] = cpu_to_le32(0);
+		sizeTable[0] = cpu_to_le32(pspace->blocks);
+		sizeTable[1] = cpu_to_le32(disc.metadata_blocks);
+	}
+
+	/* Set partition access type to read-only */
+	disc.udf_pd[0]->accessType = cpu_to_le32(1);
+
+	/* Set write protection flags in FSD domain identifier suffix and recompute FSD tag */
+	{
+		struct domainIdentSuffix *dis = (struct domainIdentSuffix *)disc.udf_fsd->domainIdent.identSuffix;
+		struct udf_desc *fsd_desc;
+		dis->domainFlags = DOMAIN_FLAGS_HARD_WRITE_PROTECT | DOMAIN_FLAGS_SOFT_WRITE_PROTECT;
+		fsd_desc = next_desc(pspace->head, TAG_IDENT_FSD);
+		if (fsd_desc)
+			disc.udf_fsd->descTag = query_tag(&disc, pspace, fsd_desc, 1);
+	}
+
 	setup_vds(&disc);
 
 	printf("Writing image: %s\n", output_file);

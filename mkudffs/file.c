@@ -112,9 +112,13 @@ tag query_tag(struct udf_disc *disc, struct udf_extent *ext, struct udf_desc *de
 	ret.descCRC = cpu_to_le16(crc);
 	if (ext->space_type & PSPACE)
 	{
-		if ((disc->flags & FLAG_METADATA) && desc->offset >= disc->metadata_mirror_start && disc->metadata_mirror_start)
+		if ((disc->flags & FLAG_METADATA) && disc->metadata_mirror_start &&
+		    desc->offset >= disc->metadata_mirror_start &&
+		    desc->offset < disc->metadata_mirror_start + disc->metadata_blocks)
 			ret.tagLocation = cpu_to_le32(desc->offset - disc->metadata_mirror_start);
-		else if ((disc->flags & FLAG_METADATA) && desc->offset >= disc->metadata_start)
+		else if ((disc->flags & FLAG_METADATA) &&
+		         desc->offset >= disc->metadata_start &&
+		         desc->offset < disc->metadata_start + disc->metadata_blocks)
 			ret.tagLocation = cpu_to_le32(desc->offset - disc->metadata_start);
 		else
 			ret.tagLocation = cpu_to_le32(desc->offset);
@@ -758,6 +762,8 @@ struct udf_desc *udf_create(struct udf_disc *disc, struct udf_extent *pspace, co
 		}
 		efe->icbTag.fileType = filetype;
 		efe->icbTag.flags = cpu_to_le16(le16_to_cpu(efe->icbTag.flags) | flags);
+		if ((disc->flags & FLAG_BDROM) && filetype == ICBTAG_FILE_TYPE_DIRECTORY)
+			efe->icbTag.flags = cpu_to_le16((le16_to_cpu(efe->icbTag.flags) & ~ICBTAG_FLAG_AD_MASK) | ICBTAG_FLAG_AD_SHORT);
 		if (parent)
 		{
 //			efe->icbTag.parentICBLocation.logicalBlockNum = cpu_to_le32(parent->offset); // for strategy type != 4

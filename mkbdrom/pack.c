@@ -209,7 +209,6 @@ static int pack_file(struct udf_disc *disc, struct udf_extent *pspace, const cha
 	struct stat st;
 	struct udf_desc *file_desc;
 	struct extendedFileEntry *efe;
-	short_ad *sad;
 	const char *basename;
 	dstring encoded_name[256];
 	size_t name_len;
@@ -261,13 +260,13 @@ static int pack_file(struct udf_disc *disc, struct udf_extent *pspace, const cha
 		return 0;
 	}
 
-	efe->icbTag.flags = cpu_to_le16(ICBTAG_FLAG_AD_SHORT);
+	efe->icbTag.flags = cpu_to_le16(ICBTAG_FLAG_AD_LONG);
 	efe->informationLength = cpu_to_le64(st.st_size);
 	efe->objectSize = cpu_to_le64(st.st_size);
 	efe->logicalBlocksRecorded = cpu_to_le64((st.st_size + disc->blocksize - 1) / disc->blocksize);
-	efe->lengthAllocDescs = cpu_to_le32(sizeof(short_ad));
+	efe->lengthAllocDescs = cpu_to_le32(sizeof(long_ad));
 
-	size_t new_len = sizeof(struct extendedFileEntry) + sizeof(short_ad);
+	size_t new_len = sizeof(struct extendedFileEntry) + sizeof(long_ad);
 	void *new_buf = realloc(file_desc->data->buffer, new_len);
 	if (!new_buf)
 	{
@@ -279,9 +278,13 @@ static int pack_file(struct udf_disc *disc, struct udf_extent *pspace, const cha
 	file_desc->length = new_len;
 
 	efe = (struct extendedFileEntry *)file_desc->data->buffer;
-	sad = (short_ad *)(efe->extendedAttrAndAllocDescs);
-	sad->extLength = cpu_to_le32((uint32_t)st.st_size);
-	sad->extPosition = cpu_to_le32(0);
+	{
+		long_ad *lad = (long_ad *)(efe->extendedAttrAndAllocDescs);
+		lad->extLength = cpu_to_le32((uint32_t)st.st_size);
+		lad->extLocation.logicalBlockNum = cpu_to_le32(0);
+		lad->extLocation.partitionReferenceNum = cpu_to_le16(0);
+		memset(lad->impUse, 0, sizeof(lad->impUse));
+	}
 
 	efe->descTag = query_tag(disc, pspace, file_desc, 1);
 
@@ -384,7 +387,7 @@ uint32_t layout_file_data(struct udf_disc *disc, struct udf_extent *pspace, uint
 	while (entry)
 	{
 		struct extendedFileEntry *efe;
-		short_ad *sad;
+		long_ad *lad;
 		uint32_t data_blocks;
 
 		if (entry->size == 0)
@@ -396,8 +399,9 @@ uint32_t layout_file_data(struct udf_disc *disc, struct udf_extent *pspace, uint
 		data_blocks = (uint32_t)((entry->size + disc->blocksize - 1) / disc->blocksize);
 		entry->data_start = next_offset;
 		efe = (struct extendedFileEntry *)entry->desc->data->buffer;
-		sad = (short_ad *)(efe->extendedAttrAndAllocDescs);
-		sad->extPosition = cpu_to_le32(entry->data_start);
+		lad = (long_ad *)(efe->extendedAttrAndAllocDescs);
+		lad->extLocation.logicalBlockNum = cpu_to_le32(entry->data_start);
+		lad->extLocation.partitionReferenceNum = cpu_to_le16(0);
 		efe->descTag = query_tag(disc, pspace, entry->desc, 1);
 		next_offset += data_blocks;
 		entry = entry->next;

@@ -1035,7 +1035,13 @@ int setup_fileset(struct udf_disc *disc, struct udf_extent *pspace)
 	desc->length = desc->data->length = length;
 	desc->data->buffer = disc->udf_fsd;
 
-	if (!(disc->flags & FLAG_VAT) && disc->udf_rev >= 0x0200)
+	if (disc->flags & FLAG_BDROM)
+	{
+		struct udf_desc *td;
+		td = set_desc(pspace, TAG_IDENT_TD, udf_alloc_blocks(disc, pspace, offset + 1, 1), sizeof(struct terminatingDesc), NULL);
+		((struct terminatingDesc *)td->data->buffer)->descTag = query_tag(disc, pspace, td, 1);
+	}
+	else if (!(disc->flags & FLAG_VAT) && disc->udf_rev >= 0x0200)
 	{
 		struct udf_desc *ss;
 
@@ -1214,11 +1220,22 @@ void setup_vds(struct udf_disc *disc)
 		}
 		setup_stable(disc, stable, sspace);
 	}
-	setup_lvd(disc, mvds, rvds, lvid, 1);
-	setup_pd(disc, mvds, rvds, 2);
-	setup_usd(disc, mvds, rvds, 3);
-	setup_iuvd(disc, mvds, rvds, 4);
-	setup_td(disc, mvds, rvds, 5);
+	if (disc->flags & FLAG_BDROM)
+	{
+		setup_iuvd(disc, mvds, rvds, 1);
+		setup_pd(disc, mvds, rvds, 2);
+		setup_lvd(disc, mvds, rvds, lvid, 3);
+		setup_usd(disc, mvds, rvds, 4);
+		setup_td(disc, mvds, rvds, 5);
+	}
+	else
+	{
+		setup_lvd(disc, mvds, rvds, lvid, 1);
+		setup_pd(disc, mvds, rvds, 2);
+		setup_usd(disc, mvds, rvds, 3);
+		setup_iuvd(disc, mvds, rvds, 4);
+		setup_td(disc, mvds, rvds, 5);
+	}
 }
 
 void setup_pvd(struct udf_disc *disc, struct udf_extent *mvds, struct udf_extent *rvds, uint32_t offset)
@@ -1784,6 +1801,7 @@ void setup_metadata(struct udf_disc *disc, struct udf_extent *pspace)
 	uint32_t meta_len;
 	uint64_t copied_descs = 0;
 	uint64_t total_descs = 0;
+	uint32_t mirror_efe_offset;
 
 	mpm = find_type2_metadata_partition(disc, 0);
 	if (!mpm)
@@ -1791,8 +1809,16 @@ void setup_metadata(struct udf_disc *disc, struct udf_extent *pspace)
 
 	meta_len = disc->metadata_blocks * disc->blocksize;
 
-	/* Metadata File EFE at partition block 0 */
-	desc = set_desc(pspace, TAG_IDENT_EFE, disc->metadata_start - 2, sizeof(struct extendedFileEntry) + sizeof(short_ad), NULL);
+	if (disc->flags & FLAG_BDROM)
+		mirror_efe_offset = disc->metadata_mirror_start - 1;
+	else
+		mirror_efe_offset = disc->metadata_start - 1;
+
+	/* Metadata File EFE */
+	{
+		uint32_t meta_efe_offset = (disc->flags & FLAG_BDROM) ? 0 : disc->metadata_start - 2;
+		desc = set_desc(pspace, TAG_IDENT_EFE, meta_efe_offset, sizeof(struct extendedFileEntry) + sizeof(short_ad), NULL);
+	}
 	efe = (struct extendedFileEntry *)desc->data->buffer;
 	memcpy(efe, &default_efe, sizeof(struct extendedFileEntry));
 	memcpy(&efe->accessTime, &disc->udf_pvd[0]->recordingDateAndTime, sizeof(timestamp));
@@ -1818,8 +1844,8 @@ void setup_metadata(struct udf_disc *disc, struct udf_extent *pspace)
 	sad->extPosition = cpu_to_le32(disc->metadata_start);
 	efe->descTag = query_tag(disc, pspace, desc, 1);
 
-	/* Metadata Mirror File EFE at partition block 1 — points to mirror copy at end of partition */
-	desc = set_desc(pspace, TAG_IDENT_EFE, disc->metadata_start - 1, sizeof(struct extendedFileEntry) + sizeof(short_ad), NULL);
+	/* Metadata Mirror File EFE */
+	desc = set_desc(pspace, TAG_IDENT_EFE, mirror_efe_offset, sizeof(struct extendedFileEntry) + sizeof(short_ad), NULL);
 	efe = (struct extendedFileEntry *)desc->data->buffer;
 	memcpy(efe, &default_efe, sizeof(struct extendedFileEntry));
 	memcpy(&efe->accessTime, &disc->udf_pvd[0]->recordingDateAndTime, sizeof(timestamp));
@@ -1889,8 +1915,19 @@ void setup_metadata(struct udf_disc *disc, struct udf_extent *pspace)
 	}
 
 	/* Update partition map with actual locations */
-	mpm->metadataFileLoc = cpu_to_le32(disc->metadata_start - 2);
-	mpm->metadataMirrorFileLoc = cpu_to_le32(disc->metadata_start - 1);
+	if (disc->flags & FLAG_BDROM)
+	{
+		mpm->metadataFileLoc = cpu_to_le32(0);
+		mpm->metadataMirrorFileLoc = cpu_to_le32(mirror_efe_offset);
+		mpm->allocUnitSize = cpu_to_le32(32);
+		mpm->alignUnitSize = cpu_to_le16(32);
+		mpm->flags = 1;
+	}
+	else
+	{
+		mpm->metadataFileLoc = cpu_to_le32(disc->metadata_start - 2);
+		mpm->metadataMirrorFileLoc = cpu_to_le32(disc->metadata_start - 1);
+	}
 }
 
 char *udf_space_type_str[UDF_SPACE_TYPE_SIZE] = { "RESERVED", "VRS", "ANCHOR", "MVDS", "RVDS", "LVID", "STABLE", "SSPACE", "PSPACE", "USPACE", "BAD", "MBR" };
